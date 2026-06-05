@@ -3,9 +3,11 @@ const state = {
   selectedAgent: 'ceo',
   config: {},
   models: [],
+  auth: {},
   dashboard: null,
   sessionId: '',
-  selectedTaskId: ''
+  selectedTaskId: '',
+  runningTaskIds: new Set()
 };
 
 const $ = (id) => document.getElementById(id);
@@ -134,10 +136,65 @@ function renderTeam() {
   });
 }
 
+function normalizeModelValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('moonshot:')) return raw;
+  return `local:${raw}`;
+}
+
+function providerFromModelValue(id) {
+  if (id.startsWith('openai:')) return 'openai';
+  if (id.startsWith('moonshot:')) return 'moonshot';
+  return 'local';
+}
+
+function modelNameFromValue(id, provider) {
+  return provider === 'openai'
+    ? id.slice('openai:'.length)
+    : provider === 'moonshot'
+      ? id.slice('moonshot:'.length)
+      : id.slice('local:'.length);
+}
+
+function providerLabel(provider) {
+  if (provider === 'openai') return 'OpenAI';
+  if (provider === 'moonshot') return 'Kimi';
+  return 'Local';
+}
+
+function normalizeModelOption(model) {
+  if (typeof model === 'string') {
+    const id = normalizeModelValue(model);
+    const provider = providerFromModelValue(id);
+    const name = modelNameFromValue(id, provider);
+    return {
+      id,
+      provider,
+      model: name,
+      label: `${providerLabel(provider)} · ${name}`
+    };
+  }
+  const id = normalizeModelValue(model.id || model.value || model.model);
+  const provider = model.provider || providerFromModelValue(id);
+  const name = model.model || modelNameFromValue(id, provider);
+  return {
+    id,
+    provider,
+    model: name,
+    label: model.label || `${providerLabel(provider)} · ${name}`
+  };
+}
+
 function renderModels() {
   const select = $('modelSelect');
   select.innerHTML = '';
-  const all = Array.from(new Set([state.config.defaultModel, ...state.models].filter(Boolean)));
+  const optionsById = new Map();
+  [state.config.defaultModel, ...state.models].filter(Boolean).forEach((model) => {
+    const option = normalizeModelOption(model);
+    if (option.id) optionsById.set(option.id, option);
+  });
+  const all = Array.from(optionsById.values());
   if (all.length === 0) {
     const option = document.createElement('option');
     option.value = '';
@@ -145,11 +202,31 @@ function renderModels() {
     select.appendChild(option);
     return;
   }
-  all.forEach((model) => {
+  const selectedValue = normalizeModelValue(state.config.defaultModel);
+  const groups = [
+    ['local', 'Local LLM'],
+    ['openai', 'OpenAI'],
+    ['moonshot', 'Kimi']
+  ];
+  groups.forEach(([provider, label]) => {
+    const items = all.filter((model) => model.provider === provider);
+    if (!items.length) return;
+    const group = document.createElement('optgroup');
+    group.label = label;
+    items.forEach((model) => {
+      const option = document.createElement('option');
+      option.value = model.id;
+      option.textContent = model.label;
+      option.selected = model.id === selectedValue;
+      group.appendChild(option);
+    });
+    select.appendChild(group);
+  });
+  all.filter((model) => !['local', 'openai', 'moonshot'].includes(model.provider)).forEach((model) => {
     const option = document.createElement('option');
-    option.value = model;
-    option.textContent = model;
-    option.selected = model === state.config.defaultModel;
+    option.value = model.id;
+    option.textContent = model.label;
+    option.selected = model.id === selectedValue;
     select.appendChild(option);
   });
 }
@@ -206,6 +283,12 @@ function renderTaskDetail() {
   state.selectedTaskId = selected.id;
   const agent = taskAgent(selected);
   const progress = selected.progress || { percent: 0, label: '진행 중', timeline: [] };
+  const resultHtml = selected.result
+    ? `<div class="task-result"><strong>Result</strong><p>${escapeHtml(selected.result)}</p></div>`
+    : '';
+  const errorHtml = selected.error
+    ? `<div class="task-result error"><strong>Error</strong><p>${escapeHtml(selected.error)}</p></div>`
+    : '';
   box.innerHTML = `
     <div class="detail-head">
       <span class="agent-avatar small" style="--accent:${escapeHtml(agent.accent || '#22e58e')}">
@@ -232,6 +315,8 @@ function renderTaskDetail() {
         </li>
       `).join('')}
     </ol>
+    ${errorHtml}
+    ${resultHtml}
   `;
 }
 
@@ -246,6 +331,8 @@ function renderTasks() {
   list.innerHTML = visible.map((task) => {
     const agent = taskAgent(task);
     const disabled = task.source === 'company' ? ' disabled title="확장 tracker 작업은 웹에서 직접 수정하지 않습니다."' : '';
+    const isRunning = task.status === 'running' || state.runningTaskIds.has(task.id);
+    const runDisabled = disabled || isRunning ? ' disabled' : '';
     const progress = task.progress || { percent: 0, label: '진행 중' };
     return `
       <article class="work-item priority-${escapeHtml(task.priority)} ${task.id === state.selectedTaskId ? 'selected' : ''}" data-task-row="${escapeHtml(task.id)}">
@@ -258,6 +345,7 @@ function renderTasks() {
           </div>
         </div>
         <div class="item-actions">
+          <button type="button" class="icon-btn" data-run-task="${escapeHtml(task.id)}"${runDisabled} title="LLM으로 작업 실행">${isRunning ? '…' : '▶'}</button>
           <button type="button" class="icon-btn" data-task="${escapeHtml(task.id)}" data-status="done"${disabled}>✓</button>
           <button type="button" class="icon-btn danger" data-task="${escapeHtml(task.id)}" data-status="cancelled"${disabled}>×</button>
         </div>
@@ -271,6 +359,12 @@ function renderTasks() {
     button.addEventListener('click', (event) => {
       event.stopPropagation();
       updateTask(button.dataset.task, button.dataset.status);
+    });
+  });
+  list.querySelectorAll('[data-run-task]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      runTask(button.dataset.runTask);
     });
   });
   if (!state.selectedTaskId || !visible.some((task) => task.id === state.selectedTaskId)) {
@@ -401,8 +495,13 @@ async function refreshModels() {
   try {
     const data = await api('/api/models');
     state.models = data.models || [];
+    state.auth = data.auth || {};
     state.config.defaultModel = data.defaultModel || state.config.defaultModel || '';
     renderModels();
+    if (data.errors && data.errors.length) {
+      const errorText = data.errors.map((item) => `${item.provider}: ${item.error}`).join('\n');
+      setLlmTestResult('pending', `일부 모델 목록 실패 · ${errorText}`);
+    }
   } catch (error) {
     state.models = [];
     renderModels();
@@ -415,12 +514,13 @@ async function testLlmConnection() {
   button.disabled = true;
   setLlmTestResult('pending', 'LLM 연결 테스트 중...');
   try {
+    const selectedModel = $('modelSelect').value.trim();
     const response = await fetch('/api/llm/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ollamaBase: $('ollamaBase').value.trim(),
-        model: $('modelSelect').value.trim(),
+        model: selectedModel,
         chatTimeoutMs: 12000
       })
     });
@@ -428,6 +528,12 @@ async function testLlmConnection() {
     const stageText = Array.isArray(result.stages)
       ? result.stages.map((stage) => `${stage.name}:${stage.ok ? 'ok' : 'fail'}`).join(' · ')
       : '';
+    if (result.authRequired) {
+      const text = `${result.provider || 'LLM'} API key 필요 · ${result.error || '환경 변수를 설정해 주세요.'}`;
+      setLlmTestResult('error', text);
+      addMessage('error', 'LLM Test', `${text}\n${result.authUrl || ''}`);
+      return;
+    }
     if (result.connected) {
       const text = `연결 성공 · ${result.provider || 'LLM'} · ${result.model} · ${result.latencyMs}ms`;
       setLlmTestResult('ok', text);
@@ -484,6 +590,25 @@ async function updateTask(id, status) {
     body: JSON.stringify({ status })
   });
   await refreshDashboard();
+}
+
+async function runTask(id) {
+  if (!id) return;
+  state.runningTaskIds.add(id);
+  renderTasks();
+  try {
+    const result = await api(`/api/tasks/${encodeURIComponent(id)}/run`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    const task = result.task || {};
+    addMessage('system', 'Task completed', `${task.title || '작업'}\n${task.result || '완료 처리되었습니다.'}`);
+  } catch (error) {
+    addMessage('error', 'Task failed', error.message);
+  } finally {
+    state.runningTaskIds.delete(id);
+    await refreshDashboard();
+  }
 }
 
 async function createApproval(event) {
@@ -595,6 +720,9 @@ async function boot() {
   await refreshModels();
   const brain = await api('/api/brain');
   renderBrain(brain.files || []);
+  setInterval(() => {
+    refreshDashboard().catch(() => {});
+  }, 15000);
 }
 
 boot().catch((error) => {

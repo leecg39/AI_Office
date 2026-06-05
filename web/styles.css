@@ -739,6 +739,31 @@ h2 { font-size: 18px; }
   color: var(--text);
 }
 
+.task-result {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid rgba(34, 211, 238, 0.22);
+  border-radius: 8px;
+  background: rgba(34, 211, 238, 0.055);
+}
+
+.task-result.error {
+  border-color: rgba(255, 74, 100, 0.35);
+  background: rgba(255, 74, 100, 0.08);
+}
+
+.task-result strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.task-result p {
+  margin: 0;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
 .approval-item p {
   margin: 4px 0 0;
 }

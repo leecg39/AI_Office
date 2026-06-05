@@ -15,6 +15,25 @@ const LOCAL_CONFIG = path.join(WEB_DIR, 'config.local.json');
 const PORT = Number(process.env.CONNECT_AI_WEB_PORT || process.env.PORT || 8788);
 const MAX_BODY = 2 * 1024 * 1024;
 const BRAIN_CACHE_TTL_MS = 10 * 1000;
+const OPENAI_API_BASE = 'https://api.openai.com/v1';
+const MOONSHOT_API_BASE = 'https://api.moonshot.ai/v1';
+const PAID_MODELS = [
+  {
+    id: 'openai:gpt-5.5',
+    provider: 'openai',
+    model: 'gpt-5.5',
+    label: 'OpenAI · GPT-5.5',
+    paid: true
+  },
+  {
+    id: 'moonshot:kimi-k2.6',
+    provider: 'moonshot',
+    model: 'kimi-k2.6',
+    label: 'Kimi · Kimi 2.6 (kimi-k2.6)',
+    paid: true,
+    contextLength: 256000
+  }
+];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -168,6 +187,17 @@ function readJson(file, fallback = {}) {
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function getAuthStatus() {
+  return {
+    openai: {
+      connected: Boolean(process.env.OPENAI_API_KEY)
+    },
+    moonshot: {
+      connected: Boolean(process.env.MOONSHOT_API_KEY)
+    }
+  };
 }
 
 function readVsCodeSettings() {
@@ -494,7 +524,7 @@ function lmBase(base) {
   return base.replace(/\/v1\/?$/, '');
 }
 
-async function listModels(config) {
+async function listLocalModels(config) {
   if (isLmStudio(config.ollamaBase)) {
     const url = `${lmBase(config.ollamaBase)}/v1/models`;
     const response = await axios.get(url, { timeout: 3500 });
@@ -508,9 +538,50 @@ function isEmbeddingModel(model) {
   return /embed|embedding/i.test(String(model || ''));
 }
 
+function parseModelRef(value) {
+  const raw = String(value || '').trim();
+  if (raw.startsWith('openai:')) return { provider: 'openai', model: raw.slice('openai:'.length) };
+  if (raw.startsWith('moonshot:')) return { provider: 'moonshot', model: raw.slice('moonshot:'.length) };
+  if (raw.startsWith('local:')) return { provider: 'local', model: raw.slice('local:'.length) };
+  return { provider: 'local', model: raw };
+}
+
+function modelRef(provider, model) {
+  return `${provider}:${String(model || '').trim()}`;
+}
+
 function firstChatModel(models, preferred) {
-  if (preferred && !isEmbeddingModel(preferred)) return preferred;
+  const preferredRef = parseModelRef(preferred);
+  if (preferredRef.provider === 'local' && preferredRef.model && !isEmbeddingModel(preferredRef.model)) {
+    return preferredRef.model;
+  }
   return (models || []).find((model) => !isEmbeddingModel(model)) || '';
+}
+
+async function listModelOptions(config) {
+  const errors = [];
+  const localResult = await Promise.resolve(listLocalModels(config)).then(
+    (models) => ({ status: 'fulfilled', value: models }),
+    (error) => ({ status: 'rejected', reason: error })
+  );
+  const models = [];
+
+  if (localResult.status === 'fulfilled') {
+    localResult.value.forEach((model) => {
+      models.push({
+        id: modelRef('local', model),
+        provider: 'local',
+        model,
+        label: `Local · ${model}`,
+        paid: false
+      });
+    });
+  } else {
+    errors.push({ provider: 'local', error: modelErrorMessage(localResult.reason) });
+  }
+
+  models.push(...PAID_MODELS.map((model) => ({ ...model })));
+  return { models, errors };
 }
 
 function buildMessages({ message, agent, brainFiles }) {
@@ -533,16 +604,48 @@ function extractModelText(data) {
   const choice = data && data.choices && data.choices[0];
   const message = choice && choice.message;
   if (message) {
-    if (typeof message.content === 'string') return message.content;
+    if (typeof message.content === 'string' && message.content.trim()) return message.content;
     if (Array.isArray(message.content)) {
-      return message.content.map((part) => part.text || part.content || '').join('').trim();
+      const text = message.content.map((part) => part.text || part.content || '').join('').trim();
+      if (text) return text;
     }
-    if (typeof message.reasoning_content === 'string') return message.reasoning_content;
   }
   if (typeof data.output_text === 'string') return data.output_text;
   if (typeof data.response === 'string') return data.response;
   if (data.message && typeof data.message.content === 'string') return data.message.content;
   return '';
+}
+
+function extractResponsesText(data) {
+  if (typeof data.output_text === 'string' && data.output_text.trim()) return data.output_text;
+  const output = Array.isArray(data && data.output) ? data.output : [];
+  const parts = [];
+  output.forEach((item) => {
+    const content = Array.isArray(item.content) ? item.content : [];
+    content.forEach((part) => {
+      if (typeof part.text === 'string') parts.push(part.text);
+      if (typeof part.content === 'string') parts.push(part.content);
+    });
+  });
+  return parts.join('').trim();
+}
+
+function providerName(provider, config) {
+  if (provider === 'openai') return 'OpenAI';
+  if (provider === 'moonshot') return 'Kimi';
+  return isLmStudio(config.ollamaBase) ? 'LM Studio' : 'Ollama';
+}
+
+function providerBase(provider, config) {
+  if (provider === 'openai') return OPENAI_API_BASE;
+  if (provider === 'moonshot') return MOONSHOT_API_BASE;
+  return config.ollamaBase;
+}
+
+function looksLikeReasoningText(text) {
+  const head = String(text || '').slice(0, 900);
+  return /^\s*(here'?s a thinking process|thinking process|analysis|분석 과정|사고 과정)/i.test(head)
+    || /analy[sz]e the request/i.test(head);
 }
 
 function modelErrorMessage(error) {
@@ -563,7 +666,8 @@ function modelErrorMessage(error) {
 }
 
 async function callModel(config, payload) {
-  const model = payload.model || config.defaultModel;
+  const selectedModel = parseModelRef(payload.model || config.defaultModel);
+  const model = selectedModel.model;
   if (!model) throw new Error('MODEL_REQUIRED');
   const requestedTimeout = Number(payload.chatTimeoutMs || payload.timeoutMs);
   const requestTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
@@ -575,16 +679,68 @@ async function callModel(config, payload) {
     ? walkBrain(config.localBrainPath, { limit: 3, snippets: false, terms })
     : { files: [] };
   const maxTokens = Math.min(Number(payload.maxTokens) || 700, 1400);
-  const directMessages = [{ role: 'user', content: String(payload.message || '') }];
+  const directMessages = Array.isArray(payload.messages) && payload.messages.length
+    ? payload.messages
+    : [{ role: 'user', content: String(payload.message || '') }];
   const messages = directMessages;
 
   async function completeOnce(nextMessages) {
+    if (selectedModel.provider === 'openai') {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        const error = new Error('OPENAI_API_KEY 환경 변수가 필요합니다.');
+        error.code = 'OPENAI_AUTH_REQUIRED';
+        throw error;
+      }
+      const response = await axios.post(`${OPENAI_API_BASE}/responses`, {
+        model,
+        input: nextMessages.map((message) => ({
+          role: message.role || 'user',
+          content: String(message.content || '')
+        })),
+        max_output_tokens: maxTokens,
+        reasoning: { effort: 'low' },
+        store: false
+      }, {
+        timeout: requestTimeout,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      return extractResponsesText(response.data).trim();
+    }
+
+    if (selectedModel.provider === 'moonshot') {
+      const apiKey = process.env.MOONSHOT_API_KEY;
+      if (!apiKey) {
+        const error = new Error('MOONSHOT_API_KEY 환경 변수가 필요합니다.');
+        error.code = 'MOONSHOT_AUTH_REQUIRED';
+        throw error;
+      }
+      const response = await axios.post(`${MOONSHOT_API_BASE}/chat/completions`, {
+        model,
+        messages: nextMessages,
+        max_completion_tokens: maxTokens,
+        thinking: { type: 'disabled' },
+        stream: false
+      }, {
+        timeout: requestTimeout,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      return extractModelText(response.data).trim();
+    }
+
     if (isLmStudio(config.ollamaBase)) {
       const response = await axios.post(`${lmBase(config.ollamaBase)}/v1/chat/completions`, {
         model,
         messages: nextMessages,
         temperature: 0.4,
         max_tokens: maxTokens,
+        reasoning: { effort: 'none' },
         stream: false
       }, { timeout: requestTimeout });
       return extractModelText(response.data).trim();
@@ -614,6 +770,32 @@ async function callModel(config, payload) {
   };
 }
 
+function buildTaskPrompt(task) {
+  return [
+    `작업 제목: ${task.title || ''}`,
+    task.description ? `상세 설명: ${task.description}` : '',
+    `우선순위: ${task.priority || 'normal'}`
+  ].filter(Boolean).join('\n');
+}
+
+async function runTaskWithModel(config, task) {
+  return callModel(config, {
+    agent: task.agent || 'ceo',
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a concise Korean task executor. Return only the final answer. Never write reasoning, analysis, or thinking process. If live web data is required and unavailable, say that live lookup is required instead of guessing.'
+      },
+      { role: 'user', content: `${buildTaskPrompt(task)}\n\n결과:` }
+    ],
+    message: task.title || '',
+    model: config.defaultModel,
+    useBrain: false,
+    maxTokens: 220,
+    chatTimeoutMs: Math.min(config.timeoutMs || 120000, Math.max(config.chatTimeoutMs || 0, 120000))
+  });
+}
+
 async function testLlmConnection(config, payload = {}) {
   const effective = {
     ...config,
@@ -621,23 +803,75 @@ async function testLlmConnection(config, payload = {}) {
     defaultModel: String(payload.model || payload.defaultModel || config.defaultModel || ''),
     chatTimeoutMs: Math.max(1000, Math.min(Number(payload.chatTimeoutMs || 12000), config.timeoutMs))
   };
+  const selectedRef = parseModelRef(effective.defaultModel);
   const startedAt = Date.now();
   const result = {
     ok: true,
     connected: false,
-    provider: isLmStudio(effective.ollamaBase) ? 'LM Studio' : 'Ollama',
-    base: effective.ollamaBase,
+    provider: providerName(selectedRef.provider, effective),
+    base: providerBase(selectedRef.provider, effective),
     model: '',
     models: [],
     latencyMs: 0,
     stages: [],
+    authRequired: false,
+    authUrl: '',
+    flowId: '',
     error: '',
     text: ''
   };
 
+  if (selectedRef.provider === 'openai' || selectedRef.provider === 'moonshot') {
+    result.model = selectedRef.model;
+    if (!result.model) {
+      result.error = `${result.provider} 모델을 선택해 주세요.`;
+      result.latencyMs = Date.now() - startedAt;
+      result.stages.push({ name: 'model', ok: false, error: result.error });
+      return result;
+    }
+
+    const apiKey = selectedRef.provider === 'openai' ? process.env.OPENAI_API_KEY : process.env.MOONSHOT_API_KEY;
+    if (!apiKey) {
+      result.authRequired = true;
+      result.authUrl = selectedRef.provider === 'openai'
+        ? 'https://platform.openai.com/settings/organization/api-keys'
+        : 'https://platform.moonshot.ai/console/api-keys';
+      result.error = selectedRef.provider === 'openai'
+        ? 'OPENAI_API_KEY 환경 변수가 필요합니다.'
+        : 'MOONSHOT_API_KEY 환경 변수가 필요합니다.';
+      result.latencyMs = Date.now() - startedAt;
+      result.stages.push({ name: 'auth', ok: false, error: result.error });
+      return result;
+    }
+
+    result.models = [result.model];
+    result.stages.push({ name: 'model', ok: true, count: 1 });
+
+    try {
+      const chatStarted = Date.now();
+      const response = await callModel(effective, {
+        model: modelRef(selectedRef.provider, result.model),
+        message: '한국어로 안녕이라고만 답해',
+        useBrain: false,
+        maxTokens: 64,
+        chatTimeoutMs: effective.chatTimeoutMs
+      });
+      result.text = response.text;
+      result.connected = Boolean(response.text);
+      result.error = result.connected ? '' : '모델이 빈 응답을 반환했습니다.';
+      result.stages.push({ name: 'chat', ok: result.connected, latencyMs: Date.now() - chatStarted, error: result.error });
+    } catch (error) {
+      result.error = modelErrorMessage(error);
+      result.stages.push({ name: 'chat', ok: false, error: result.error });
+    }
+
+    result.latencyMs = Date.now() - startedAt;
+    return result;
+  }
+
   try {
     const listStarted = Date.now();
-    result.models = await listModels(effective);
+    result.models = await listLocalModels(effective);
     result.stages.push({ name: 'models', ok: true, latencyMs: Date.now() - listStarted, count: result.models.length });
   } catch (error) {
     result.error = modelErrorMessage(error);
@@ -700,13 +934,14 @@ function getAgent(state, id) {
 function taskProgress(task) {
   const status = task.status || 'open';
   const created = new Date(task.createdAt || task.updatedAt || Date.now()).getTime();
-  const updated = new Date(task.updatedAt || task.createdAt || Date.now()).getTime();
   const ageMinutes = Number.isFinite(created) ? Math.max(0, (Date.now() - created) / 60000) : 0;
   const priorityBoost = { urgent: 18, high: 10, normal: 4, low: 0 }[task.priority] || 0;
   const seed = String(task.id || task.title || '').split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % 9;
   let percent = Math.min(92, Math.round(14 + priorityBoost + seed + ageMinutes * 2.4));
+  if (status === 'running') percent = Math.max(percent, 64);
   if (status === 'done') percent = 100;
   if (status === 'cancelled') percent = 0;
+  if (status === 'failed') percent = Math.max(1, Math.min(percent, 92));
 
   const phase = percent >= 100 ? 'done'
     : percent >= 74 ? 'review'
@@ -719,16 +954,29 @@ function taskProgress(task) {
     working: '진행 중',
     review: '검토 중',
     done: '완료',
-    cancelled: '취소'
+    cancelled: '취소',
+    failed: '오류'
   };
-  const activePhase = status === 'cancelled' ? 'cancelled' : phase;
+  const activePhase = ['cancelled', 'failed'].includes(status) ? status : phase;
+  const terminal = ['done', 'cancelled', 'failed'].includes(status);
   const timeline = [
     { key: 'queued', label: '요청 접수', done: percent >= 1 || status !== 'open', current: activePhase === 'queued' },
     { key: 'assigned', label: '에이전트 배정', done: percent >= 16 || status === 'done', current: activePhase === 'assigned' },
     { key: 'working', label: '자료 확인 및 작업', done: percent >= 38 || status === 'done', current: activePhase === 'working' },
     { key: 'review', label: '결과 정리', done: percent >= 74 || status === 'done', current: activePhase === 'review' },
-    { key: 'done', label: status === 'cancelled' ? '취소됨' : '완료', done: status === 'done' || status === 'cancelled', current: activePhase === 'done' || activePhase === 'cancelled' }
+    { key: 'done', label: status === 'cancelled' ? '취소됨' : status === 'failed' ? '오류' : '완료', done: terminal, current: activePhase === 'done' || activePhase === 'cancelled' || activePhase === 'failed' }
   ];
+  const activity = status === 'done'
+    ? '결과가 완료 처리되었습니다.'
+    : status === 'cancelled'
+      ? '작업이 취소되었습니다.'
+      : status === 'failed'
+        ? `작업 실행 중 오류가 발생했습니다.${task.error ? ` ${task.error}` : ''}`
+        : status === 'running'
+          ? 'LLM이 작업을 실행하고 있습니다.'
+          : activePhase === 'review'
+            ? '결과 생성 대기 · LLM 실행 또는 완료 체크가 필요합니다.'
+            : `${labels[activePhase] || '진행 중'} · 에이전트가 요청을 처리하고 있습니다.`;
   return {
     percent,
     phase: activePhase,
@@ -736,11 +984,7 @@ function taskProgress(task) {
     updatedAt: task.updatedAt || task.createdAt || '',
     startedAt: task.createdAt || '',
     timeline,
-    activity: status === 'done'
-      ? '결과가 완료 처리되었습니다.'
-      : status === 'cancelled'
-        ? '작업이 취소되었습니다.'
-        : `${labels[activePhase] || '진행 중'} · 에이전트가 요청을 처리하고 있습니다.`,
+    activity,
     mode: 'local-progress'
   };
 }
@@ -865,6 +1109,72 @@ async function handleTasks(req, res, pathname, config) {
     return true;
   }
 
+  const runMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/run$/);
+  if (runMatch && req.method === 'POST') {
+    const id = decodeURIComponent(runMatch[1]);
+    const task = state.tasks.find((item) => item.id === id);
+    if (!task) {
+      sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+      return true;
+    }
+    if (task.source === 'company') {
+      sendJson(res, 400, { ok: false, error: 'COMPANY_TASK_READ_ONLY' });
+      return true;
+    }
+
+    task.status = 'running';
+    task.startedAt = task.startedAt || nowIso();
+    task.updatedAt = nowIso();
+    delete task.error;
+    delete task.result;
+    delete task.sources;
+    pushEvent(state, 'task.running', `작업 실행 시작: ${task.title}`, { agent: task.agent });
+    saveState(state);
+
+    try {
+      const result = await runTaskWithModel(config, task);
+      const latest = loadState();
+      const latestTask = latest.tasks.find((item) => item.id === id);
+      if (!latestTask) {
+        sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+        return true;
+      }
+      if (latestTask.status === 'cancelled') {
+        sendJson(res, 200, { ok: true, task: enrichTask(latestTask) });
+        return true;
+      }
+      const text = cleanText(result.text, 12000);
+      if (!text) throw new Error('모델이 빈 응답을 반환했습니다.');
+      if (looksLikeReasoningText(text)) {
+        throw new Error('모델이 최종 답변 대신 추론 과정을 반환했습니다. reasoning 비활성 옵션이나 모델 설정을 확인해 주세요.');
+      }
+      latestTask.status = 'done';
+      latestTask.result = text;
+      latestTask.sources = Array.isArray(result.sources) ? result.sources : [];
+      latestTask.completedAt = nowIso();
+      latestTask.updatedAt = latestTask.completedAt;
+      delete latestTask.error;
+      pushEvent(latest, 'task.completed', `작업 완료: ${latestTask.title}`, { agent: latestTask.agent });
+      saveState(latest);
+      sendJson(res, 200, { ok: true, task: enrichTask(latestTask) });
+    } catch (error) {
+      const latest = loadState();
+      const latestTask = latest.tasks.find((item) => item.id === id);
+      if (latestTask) {
+        latestTask.status = 'failed';
+        latestTask.error = modelErrorMessage(error);
+        latestTask.failedAt = nowIso();
+        latestTask.updatedAt = latestTask.failedAt;
+        delete latestTask.result;
+        delete latestTask.sources;
+        pushEvent(latest, 'task.failed', `작업 실패: ${latestTask.error}`, { agent: latestTask.agent });
+        saveState(latest);
+      }
+      sendJson(res, 502, { ok: false, error: modelErrorMessage(error), task: latestTask ? enrichTask(latestTask) : undefined });
+    }
+    return true;
+  }
+
   const id = routeParam(pathname, '/api/tasks/');
   if (id && req.method === 'GET') {
     const task = listTasks(state, config).find((item) => item.id === id);
@@ -879,9 +1189,19 @@ async function handleTasks(req, res, pathname, config) {
       sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
       return true;
     }
-    if (body.status && ['open', 'done', 'cancelled'].includes(body.status)) task.status = body.status;
+    if (body.status && ['open', 'running', 'done', 'cancelled', 'failed'].includes(body.status)) {
+      task.status = body.status;
+      if (body.status === 'done') task.completedAt = nowIso();
+      if (body.status === 'cancelled') task.cancelledAt = nowIso();
+      if (body.status === 'open') {
+        delete task.error;
+        delete task.failedAt;
+      }
+    }
     if (body.priority && ['urgent', 'high', 'normal', 'low'].includes(body.priority)) task.priority = body.priority;
     if (body.title !== undefined) task.title = cleanText(body.title, 500) || task.title;
+    if (body.result !== undefined) task.result = cleanText(body.result, 12000);
+    if (body.error !== undefined) task.error = cleanText(body.error, 1200);
     if (body.agent && AGENTS.some((item) => item.id === body.agent)) {
       task.agent = body.agent;
       task.agentIds = [body.agent];
@@ -1059,9 +1379,22 @@ async function handleApi(req, res, pathname, url) {
 
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
-      sendJson(res, 200, { ok: true, models: await listModels(config), defaultModel: config.defaultModel });
+      const result = await listModelOptions(config);
+      sendJson(res, 200, {
+        ok: true,
+        models: result.models,
+        errors: result.errors,
+        defaultModel: config.defaultModel,
+        auth: getAuthStatus()
+      });
     } catch (error) {
-      sendJson(res, 502, { ok: false, error: error.message || String(error), models: [], defaultModel: config.defaultModel });
+      sendJson(res, 502, {
+        ok: false,
+        error: error.message || String(error),
+        models: [],
+        defaultModel: config.defaultModel,
+        auth: getAuthStatus()
+      });
     }
     return;
   }
