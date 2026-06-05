@@ -9,20 +9,10 @@
   <body>
     <div class="shell">
       <aside class="sidebar">
+        <button id="sidebarToggle" type="button" class="sidebar-toggle" aria-label="패널 닫기" aria-expanded="true">‹</button>
         <div class="brand-row">
-          <img class="brand-icon" src="/assets/icon.png" alt="Connect AI">
-          <div>
-            <div class="brand-title">Connect AI</div>
-            <div class="brand-sub">Standalone Web</div>
-          </div>
+          <img class="brand-logo" src="/assets/petasos-logo.png" alt="Petasos">
         </div>
-
-        <section class="panel runtime-panel">
-          <div class="panel-title">Runtime</div>
-          <div class="kv"><span>Server</span><strong id="serverState">checking</strong></div>
-          <div class="kv"><span>Brain</span><strong id="brainState">-</strong></div>
-          <div class="kv"><span>Session</span><strong id="sessionState">new</strong></div>
-        </section>
 
         <section class="panel">
           <div class="panel-title">Dashboard</div>
@@ -38,13 +28,19 @@
           <div class="panel-title">Agents</div>
           <div id="agentList" class="agent-list"></div>
         </section>
+
+        <section class="panel runtime-panel">
+          <div class="panel-title">Runtime</div>
+          <div class="kv"><span>Server</span><strong id="serverState">checking</strong></div>
+          <div class="kv"><span>Brain</span><strong id="brainState">-</strong></div>
+          <div class="kv"><span>Session</span><strong id="sessionState">new</strong></div>
+        </section>
       </aside>
 
       <main class="main">
         <header class="topbar">
           <div>
-            <p id="companyName" class="eyebrow">Connect AI Company</p>
-            <h1>AI 1인 기업 운영실</h1>
+            <p id="companyName" class="eyebrow">AI Company</p>
           </div>
           <button id="apiPanelToggle" type="button" class="secondary api-toggle">API</button>
         </header>
@@ -59,8 +55,6 @@
             </div>
           </div>
         </section>
-
-        <section id="teamGrid" class="team-grid" aria-label="Agent team"></section>
 
         <div class="work-grid">
           <section class="surface">
@@ -105,6 +99,12 @@
             <div id="approvalList" class="item-list"></div>
           </section>
         </div>
+
+        <section class="team-carousel" aria-label="Agent team">
+          <button id="teamPrev" type="button" class="team-nav" aria-label="이전 에이전트">‹</button>
+          <div id="teamGrid" class="team-grid" tabindex="0"></div>
+          <button id="teamNext" type="button" class="team-nav" aria-label="다음 에이전트">›</button>
+        </section>
 
         <div class="work-grid bottom-grid">
           <section class="surface">

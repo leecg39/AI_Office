@@ -31,10 +31,11 @@ export interface AgentDef {
 export const AGENTS: Record<string, AgentDef> = {
   ceo: {
     id: 'ceo',
-    name: 'CEO',
+    name: 'Anna',
     role: 'Chief Executive Agent',
     emoji: '🧭',
     color: '#F8FAFC',
+    profileImage: 'anna_ceo.jpeg',
     specialty: '오케스트레이션, 작업 분해, 종합 판단, 다음 액션 결정',
     tagline: '회사 전체 의사결정과 작업 분배를 맡습니다'
   },
@@ -65,7 +66,8 @@ export const AGENTS: Record<string, AgentDef> = {
     emoji: '🎨',
     color: '#A78BFA',
     specialty: '브랜드 디자인 브리프(컬러·타이포·레퍼런스), 썸네일 컨셉 3안, 비주얼 시스템, 디자인 가이드',
-    tagline: '브랜드와 시각 자산 디자인을 담당합니다'
+    tagline: '브랜드와 시각 자산 디자인을 담당합니다',
+    profileImage: 'designer_avatar.svg'
   },
   developer: {
     id: 'developer',
@@ -117,7 +119,8 @@ export const AGENTS: Record<string, AgentDef> = {
     emoji: '✍️',
     color: '#FBBF24',
     specialty: '카피라이팅, 영상 스크립트 초안, 인스타 캡션, 블로그 글, 메일 톤앤매너, 후크 작성',
-    tagline: '카피·스크립트·후크를 글로 풀어냅니다'
+    tagline: '카피·스크립트·후크를 글로 풀어냅니다',
+    profileImage: 'writer_avatar.svg'
   },
   researcher: {
     id: 'researcher',
@@ -126,7 +129,8 @@ export const AGENTS: Record<string, AgentDef> = {
     emoji: '🔍',
     color: '#60A5FA',
     specialty: '트렌드 리서치, 경쟁사 분석, 데이터 수집·요약, 인용 자료 정리, 사실 확인',
-    tagline: '트렌드와 데이터를 모아 사실 확인까지 끝냅니다'
+    tagline: '트렌드와 데이터를 모아 사실 확인까지 끝냅니다',
+    profileImage: 'researcher_avatar.svg'
   }
 };
 

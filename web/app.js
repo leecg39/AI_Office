@@ -36,16 +36,57 @@ function taskAgent(task) {
 }
 
 const officePositions = {
-  ceo: { x: 13, y: 47 },
-  youtube: { x: 27, y: 55 },
-  developer: { x: 43, y: 50 },
-  business: { x: 57, y: 48 },
-  secretary: { x: 68, y: 56 },
-  editor: { x: 78, y: 50 },
-  designer: { x: 51, y: 70 },
-  writer: { x: 34, y: 70 },
-  researcher: { x: 87, y: 44 }
+  ceo: { x: 13, y: 50 },
+  youtube: { x: 29, y: 28 },
+  designer: { x: 43, y: 19 },
+  developer: { x: 45, y: 58 },
+  business: { x: 58, y: 55 },
+  secretary: { x: 68, y: 64 },
+  editor: { x: 81, y: 66 },
+  writer: { x: 37, y: 73 },
+  researcher: { x: 90, y: 37 }
 };
+
+const OFFICE_POSITION_KEY = 'connect-ai-office-positions';
+const SIDEBAR_COLLAPSED_KEY = 'connect-ai-sidebar-collapsed';
+
+function loadOfficePositions() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OFFICE_POSITION_KEY) || '{}');
+    Object.entries(saved).forEach(([agentId, pos]) => {
+      if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+      officePositions[agentId] = {
+        x: Math.min(98, Math.max(2, pos.x)),
+        y: Math.min(98, Math.max(2, pos.y))
+      };
+    });
+  } catch {
+    localStorage.removeItem(OFFICE_POSITION_KEY);
+  }
+}
+
+function saveOfficePositions() {
+  localStorage.setItem(OFFICE_POSITION_KEY, JSON.stringify(officePositions));
+}
+
+function applySidebarState(collapsed) {
+  document.body.classList.toggle('sidebar-collapsed', collapsed);
+  const toggle = $('sidebarToggle');
+  if (!toggle) return;
+  toggle.textContent = collapsed ? '›' : '‹';
+  toggle.setAttribute('aria-label', collapsed ? '패널 열기' : '패널 닫기');
+  toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+function loadSidebarState() {
+  applySidebarState(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true');
+}
+
+function toggleSidebar() {
+  const collapsed = !document.body.classList.contains('sidebar-collapsed');
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  applySidebarState(collapsed);
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -136,6 +177,26 @@ function renderTeam() {
     });
     grid.appendChild(card);
   });
+  updateTeamNav();
+}
+
+function scrollTeam(direction) {
+  const grid = $('teamGrid');
+  if (!grid) return;
+  const card = grid.querySelector('.team-card');
+  const cardWidth = card ? card.getBoundingClientRect().width : 160;
+  grid.scrollBy({ left: direction * (cardWidth + 10), behavior: 'smooth' });
+  window.setTimeout(updateTeamNav, 240);
+}
+
+function updateTeamNav() {
+  const grid = $('teamGrid');
+  const prev = $('teamPrev');
+  const next = $('teamNext');
+  if (!grid || !prev || !next) return;
+  const maxScroll = Math.max(0, grid.scrollWidth - grid.clientWidth);
+  prev.disabled = grid.scrollLeft <= 1;
+  next.disabled = grid.scrollLeft >= maxScroll - 1;
 }
 
 function normalizeModelValue(value) {
@@ -307,25 +368,80 @@ function renderOfficeActivity() {
     if (!byAgent.has(task.agent)) byAgent.set(task.agent, []);
     byAgent.get(task.agent).push(task);
   });
-  const markers = Array.from(byAgent.entries()).map(([agentId, agentTasks]) => {
-    const agent = state.agents.find((item) => item.id === agentId) || {};
+  const markers = state.agents.map((agent) => {
+    const agentTasks = byAgent.get(agent.id) || [];
     const task = agentTasks[0];
-    const pos = officePositions[agentId] || { x: 50, y: 50 };
-    const progress = task.progress || { percent: 0, label: '진행 중' };
-    const title = `${agent.name || agentId}: ${task.title} (${progress.percent}%)`;
+    const pos = officePositions[agent.id] || { x: 50, y: 50 };
+    const hasWork = agentTasks.length > 0;
+    const progress = hasWork && task.progress ? task.progress : { percent: 0, label: '대기' };
+    const title = hasWork
+      ? `${agent.name}: ${task.title} (${progress.percent}%)`
+      : `${agent.name}: ${agent.role}`;
+    const taskAttr = hasWork ? ` data-task-id="${escapeHtml(task.id)}"` : '';
     return `
-      <button class="office-agent-marker" data-task-id="${escapeHtml(task.id)}" title="${escapeHtml(title)}" style="--x:${pos.x};--y:${pos.y};--accent:${escapeHtml(agent.accent || '#22e58e')}">
-        <span class="marker-avatar">${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="">` : escapeHtml(agent.emoji || '')}</span>
+      <button type="button" class="office-agent-marker ${hasWork ? 'working' : 'seated'}"${taskAttr} data-agent-id="${escapeHtml(agent.id)}" aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}" style="--x:${pos.x};--y:${pos.y};--accent:${escapeHtml(agent.accent || '#22e58e')}">
+        <span class="marker-avatar">${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="${escapeHtml(agent.name)}">` : escapeHtml(agent.emoji || '')}</span>
         <span class="marker-work">
-          <strong>${escapeHtml(agent.name || agentId)}</strong>
-          <em>${escapeHtml(progress.label)} · ${progress.percent}%</em>
+          <strong>${escapeHtml(agent.name)}</strong>
+          <em>${hasWork ? escapeHtml(progress.label) : escapeHtml(agent.role)}</em>
         </span>
       </button>
     `;
   });
   layer.innerHTML = markers.join('');
+  layer.querySelectorAll('.office-agent-marker').forEach((button) => {
+    bindOfficeMarkerDrag(button, layer);
+  });
   layer.querySelectorAll('[data-task-id]').forEach((button) => {
-    button.addEventListener('click', () => selectTask(button.dataset.taskId));
+    button.addEventListener('click', (event) => {
+      if (button.dataset.dragged === 'true') {
+        event.preventDefault();
+        button.dataset.dragged = 'false';
+        return;
+      }
+      selectTask(button.dataset.taskId);
+    });
+  });
+}
+
+function bindOfficeMarkerDrag(button, layer) {
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const agentId = button.dataset.agentId;
+    if (!agentId) return;
+    const rect = layer.getBoundingClientRect();
+    let moved = false;
+    button.classList.add('dragging');
+    button.setPointerCapture(event.pointerId);
+
+    const moveTo = (clientX, clientY) => {
+      const x = Math.min(98, Math.max(2, ((clientX - rect.left) / rect.width) * 100));
+      const y = Math.min(98, Math.max(2, ((clientY - rect.top) / rect.height) * 100));
+      officePositions[agentId] = { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
+      button.style.setProperty('--x', officePositions[agentId].x);
+      button.style.setProperty('--y', officePositions[agentId].y);
+    };
+
+    const onPointerMove = (moveEvent) => {
+      moved = true;
+      moveTo(moveEvent.clientX, moveEvent.clientY);
+    };
+
+    const onPointerUp = () => {
+      button.classList.remove('dragging');
+      button.releasePointerCapture(event.pointerId);
+      button.removeEventListener('pointermove', onPointerMove);
+      button.removeEventListener('pointerup', onPointerUp);
+      button.removeEventListener('pointercancel', onPointerUp);
+      if (moved) {
+        button.dataset.dragged = 'true';
+        saveOfficePositions();
+      }
+    };
+
+    button.addEventListener('pointermove', onPointerMove);
+    button.addEventListener('pointerup', onPointerUp);
+    button.addEventListener('pointercancel', onPointerUp);
   });
 }
 
@@ -501,7 +617,7 @@ function renderAll() {
   state.agents = dashboard.agents || state.agents || [];
   state.config = dashboard.config || state.config || {};
 
-  $('companyName').textContent = dashboard.company || 'Connect AI Company';
+  $('companyName').textContent = 'AI Company';
   $('serverState').textContent = dashboard.version ? `${dashboard.version} online` : 'online';
   $('brainState').textContent = dashboard.brain ? `${dashboard.brain.fileCount}${dashboard.brain.capped ? '+' : ''} files` : '-';
   $('sessionState').textContent = state.sessionId ? state.sessionId.slice(-8) : 'new';
@@ -881,8 +997,21 @@ async function sendMessage(message) {
 }
 
 function bindEvents() {
+  $('sidebarToggle').addEventListener('click', toggleSidebar);
   $('apiPanelToggle').addEventListener('click', openApiPanel);
   $('apiPanelClose').addEventListener('click', closeApiPanel);
+  $('teamPrev').addEventListener('click', () => scrollTeam(-1));
+  $('teamNext').addEventListener('click', () => scrollTeam(1));
+  $('teamGrid').addEventListener('scroll', updateTeamNav);
+  $('teamGrid').addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      scrollTeam(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      scrollTeam(1);
+    }
+  });
   document.querySelectorAll('[data-close-api]').forEach((button) => {
     button.addEventListener('click', closeApiPanel);
   });
@@ -945,6 +1074,8 @@ function bindEvents() {
 }
 
 async function boot() {
+  loadOfficePositions();
+  loadSidebarState();
   bindEvents();
   addMessage('system', 'Connect AI Web', '웹사이트 모드로 운영실을 시작했습니다.');
   await refreshDashboard();

@@ -98,10 +98,11 @@ function resolveAgentImage(fileName) {
 const AGENTS = [
   {
     id: 'ceo',
-    name: 'CEO',
+    name: 'Anna',
     role: 'Chief Executive Agent',
     emoji: '🧭',
     accent: '#f8fafc',
+    avatar: resolveAgentImage('anna_ceo.jpeg'),
     specialty: '작업 분해, 종합 판단, 다음 액션 결정',
     tagline: '회사 전체 의사결정과 작업 분배를 맡습니다'
   },
@@ -162,7 +163,8 @@ const AGENTS = [
     emoji: '🎨',
     accent: '#a78bfa',
     specialty: '브랜드, 썸네일, 디자인 시스템',
-    tagline: '시각 자산과 화면 품질을 담당합니다'
+    tagline: '시각 자산과 화면 품질을 담당합니다',
+    avatar: resolveAgentImage('designer_avatar.svg')
   },
   {
     id: 'writer',
@@ -171,7 +173,8 @@ const AGENTS = [
     emoji: '✍️',
     accent: '#fbbf24',
     specialty: '카피, 스크립트, 후크 작성',
-    tagline: '글과 메시지를 선명하게 만듭니다'
+    tagline: '글과 메시지를 선명하게 만듭니다',
+    avatar: resolveAgentImage('writer_avatar.svg')
   },
   {
     id: 'researcher',
@@ -180,7 +183,8 @@ const AGENTS = [
     emoji: '🔍',
     accent: '#60a5fa',
     specialty: '리서치, 경쟁 분석, 사실 확인',
-    tagline: '근거와 자료를 찾아 정리합니다'
+    tagline: '근거와 자료를 찾아 정리합니다',
+    avatar: resolveAgentImage('researcher_avatar.svg')
   }
 ];
 
