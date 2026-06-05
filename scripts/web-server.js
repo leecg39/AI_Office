@@ -3,7 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { randomUUID } = require('crypto');
+const { createHash, randomBytes, randomUUID } = require('crypto');
 const axios = require('axios');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -11,12 +11,29 @@ const WEB_DIR = path.join(ROOT, 'web');
 const ASSETS_DIR = path.join(ROOT, 'assets');
 const DATA_DIR = path.join(WEB_DIR, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const LLM_CREDENTIALS_FILE = path.join(DATA_DIR, 'llm-credentials.local.json');
 const LOCAL_CONFIG = path.join(WEB_DIR, 'config.local.json');
 const PORT = Number(process.env.CONNECT_AI_WEB_PORT || process.env.PORT || 8788);
 const MAX_BODY = 2 * 1024 * 1024;
 const BRAIN_CACHE_TTL_MS = 10 * 1000;
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const MOONSHOT_API_BASE = 'https://api.moonshot.ai/v1';
+const PROVIDERS = {
+  openai: {
+    id: 'openai',
+    name: 'OpenAI',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    keyUrl: 'https://platform.openai.com/settings/organization/api-keys',
+    docsUrl: 'https://developers.openai.com/api/docs/guides/latest-model'
+  },
+  moonshot: {
+    id: 'moonshot',
+    name: 'Kimi',
+    apiKeyEnv: 'MOONSHOT_API_KEY',
+    keyUrl: 'https://platform.moonshot.ai/console/api-keys',
+    docsUrl: 'https://platform.kimi.ai/docs/api/overview'
+  }
+};
 const PAID_MODELS = [
   {
     id: 'openai:gpt-5.5',
@@ -160,6 +177,7 @@ const DEFAULT_STATE = {
 };
 
 const brainCache = new Map();
+const oauthFlows = new Map();
 
 function expandHome(input) {
   if (!input) return '';
@@ -189,15 +207,78 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
 }
 
-function getAuthStatus() {
+function readLlmCredentials() {
+  const value = readJson(LLM_CREDENTIALS_FILE, {});
+  return value && typeof value === 'object' ? value : {};
+}
+
+function writeLlmCredentials(value) {
+  writeJson(LLM_CREDENTIALS_FILE, value);
+  try {
+    fs.chmodSync(LLM_CREDENTIALS_FILE, 0o600);
+  } catch {
+    // Best effort only; credentials are stored under ignored local web/data.
+  }
+}
+
+function providerConfig(provider) {
+  return PROVIDERS[provider] || null;
+}
+
+function providerOAuthConfig(provider) {
+  const upper = String(provider || '').toUpperCase();
   return {
-    openai: {
-      connected: Boolean(process.env.OPENAI_API_KEY)
-    },
-    moonshot: {
-      connected: Boolean(process.env.MOONSHOT_API_KEY)
-    }
+    authUrl: process.env[`CONNECT_AI_${upper}_OAUTH_AUTH_URL`] || '',
+    tokenUrl: process.env[`CONNECT_AI_${upper}_OAUTH_TOKEN_URL`] || '',
+    clientId: process.env[`CONNECT_AI_${upper}_OAUTH_CLIENT_ID`] || '',
+    clientSecret: process.env[`CONNECT_AI_${upper}_OAUTH_CLIENT_SECRET`] || '',
+    scope: process.env[`CONNECT_AI_${upper}_OAUTH_SCOPE`] || ''
   };
+}
+
+function providerCredential(provider) {
+  const config = providerConfig(provider);
+  if (!config) return { token: '', source: '', method: '' };
+  if (process.env[config.apiKeyEnv]) {
+    return { token: process.env[config.apiKeyEnv], source: 'env', method: 'apiKey' };
+  }
+  const credentials = readLlmCredentials();
+  const saved = credentials[provider] || {};
+  if (saved.apiKey) return { token: saved.apiKey, source: 'local', method: 'apiKey' };
+  if (saved.oauth && saved.oauth.accessToken) {
+    return { token: saved.oauth.accessToken, source: 'local', method: 'oauth' };
+  }
+  return { token: '', source: '', method: '' };
+}
+
+function getProviderSummaries() {
+  return Object.values(PROVIDERS).map((provider) => {
+    const credential = providerCredential(provider.id);
+    const oauth = providerOAuthConfig(provider.id);
+    return {
+      id: provider.id,
+      name: provider.name,
+      keyUrl: provider.keyUrl,
+      docsUrl: provider.docsUrl,
+      apiKeyEnv: provider.apiKeyEnv,
+      connected: Boolean(credential.token),
+      method: credential.method,
+      source: credential.source,
+      oauthConfigured: Boolean(oauth.authUrl && oauth.tokenUrl && oauth.clientId)
+    };
+  });
+}
+
+function getAuthStatus() {
+  return Object.fromEntries(getProviderSummaries().map((provider) => [
+    provider.id,
+    {
+      connected: provider.connected,
+      method: provider.method,
+      source: provider.source,
+      oauthConfigured: provider.oauthConfigured
+    }
+  ]));
 }
 
 function readVsCodeSettings() {
@@ -272,6 +353,139 @@ function newId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
 }
 
+function requestBaseUrl(req) {
+  const host = req && req.headers && req.headers.host ? req.headers.host : `127.0.0.1:${PORT}`;
+  return `http://${host}`;
+}
+
+function createOAuthFlow(req, providerId) {
+  const provider = providerConfig(providerId);
+  if (!provider) throw new Error('PROVIDER_NOT_FOUND');
+  const oauth = providerOAuthConfig(providerId);
+  if (!oauth.authUrl || !oauth.tokenUrl || !oauth.clientId) {
+    return {
+      provider: providerId,
+      available: false,
+      authUrl: provider.keyUrl,
+      message: `${provider.name} OAuth 설정이 없습니다. API key 페이지를 열었습니다.`
+    };
+  }
+
+  const flowId = newId('oauth');
+  const codeVerifier = randomBytes(64).toString('base64url');
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+  const callbackUrl = `${requestBaseUrl(req)}/oauth/${encodeURIComponent(providerId)}/callback`;
+  const authUrl = new URL(oauth.authUrl);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', oauth.clientId);
+  authUrl.searchParams.set('redirect_uri', callbackUrl);
+  authUrl.searchParams.set('state', flowId);
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  if (oauth.scope) authUrl.searchParams.set('scope', oauth.scope);
+  oauthFlows.set(flowId, {
+    provider: providerId,
+    status: 'pending',
+    codeVerifier,
+    callbackUrl,
+    createdAt: Date.now(),
+    error: ''
+  });
+  return {
+    provider: providerId,
+    available: true,
+    flowId,
+    authUrl: authUrl.toString(),
+    message: `${provider.name} OAuth 인증 창을 열었습니다.`
+  };
+}
+
+function escapeHtmlForPage(value) {
+  return String(value || '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[char]);
+}
+
+function oauthCallbackPage(title, body) {
+  return `<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${escapeHtmlForPage(title)}</title>
+    <style>
+      body{margin:0;min-height:100vh;display:grid;place-items:center;background:#07090d;color:#eef5f3;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      main{width:min(520px,calc(100vw - 32px));border:1px solid rgba(255,255,255,.12);border-radius:10px;background:#0e1418;padding:24px}
+      h1{margin:0 0 8px;font-size:22px}
+      p{margin:0;color:#93a2aa}
+    </style>
+  </head>
+  <body><main><h1>${escapeHtmlForPage(title)}</h1><p>${escapeHtmlForPage(body)}</p></main></body>
+</html>`;
+}
+
+async function handleOAuthCallback(req, res, url) {
+  const match = url.pathname.match(/^\/oauth\/([^/]+)\/callback$/);
+  const providerId = match ? decodeURIComponent(match[1]) : '';
+  const provider = providerConfig(providerId);
+  const flowId = url.searchParams.get('state') || '';
+  const flow = flowId ? oauthFlows.get(flowId) : null;
+  if (!provider || !flow || flow.provider !== providerId) {
+    sendHtml(res, 404, oauthCallbackPage('OAuth 인증 실패', '인증 세션을 찾을 수 없습니다. API 패널에서 다시 시도해 주세요.'));
+    return;
+  }
+
+  const code = url.searchParams.get('code');
+  const error = url.searchParams.get('error');
+  if (error || !code) {
+    flow.status = 'error';
+    flow.error = error || '인증 코드가 없습니다.';
+    sendHtml(res, 400, oauthCallbackPage('OAuth 인증 실패', flow.error));
+    return;
+  }
+
+  const oauth = providerOAuthConfig(providerId);
+  try {
+    const body = new URLSearchParams();
+    body.set('grant_type', 'authorization_code');
+    body.set('code', code);
+    body.set('redirect_uri', flow.callbackUrl);
+    body.set('client_id', oauth.clientId);
+    body.set('code_verifier', flow.codeVerifier);
+    if (oauth.clientSecret) body.set('client_secret', oauth.clientSecret);
+    const response = await axios.post(oauth.tokenUrl, body.toString(), {
+      timeout: 15000,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    const accessToken = response.data && response.data.access_token;
+    if (!accessToken) throw new Error('OAuth access token이 응답에 없습니다.');
+    const credentials = readLlmCredentials();
+    credentials[providerId] = {
+      ...(credentials[providerId] || {}),
+      oauth: {
+        accessToken,
+        refreshToken: response.data.refresh_token || '',
+        tokenType: response.data.token_type || 'Bearer',
+        expiresAt: response.data.expires_in ? Date.now() + Number(response.data.expires_in) * 1000 : 0,
+        savedAt: nowIso()
+      },
+      method: 'oauth'
+    };
+    writeLlmCredentials(credentials);
+    flow.status = 'connected';
+    flow.error = '';
+    sendHtml(res, 200, oauthCallbackPage(`${provider.name} OAuth 연결 완료`, 'Connect AI로 돌아가 연결 상태를 확인하세요. 이 창은 닫아도 됩니다.'));
+  } catch (exchangeError) {
+    flow.status = 'error';
+    flow.error = modelErrorMessage(exchangeError);
+    sendHtml(res, 502, oauthCallbackPage('OAuth 인증 실패', flow.error));
+  }
+}
+
 function cleanText(value, max = 4000) {
   return String(value || '').replace(/\0/g, '').trim().slice(0, max);
 }
@@ -291,6 +505,14 @@ function sendJson(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body)
+  });
+  res.end(body);
+}
+
+function sendHtml(res, status, body) {
+  res.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(body)
   });
   res.end(body);
@@ -686,9 +908,9 @@ async function callModel(config, payload) {
 
   async function completeOnce(nextMessages) {
     if (selectedModel.provider === 'openai') {
-      const apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey) {
-        const error = new Error('OPENAI_API_KEY 환경 변수가 필요합니다.');
+      const credential = providerCredential('openai');
+      if (!credential.token) {
+        const error = new Error('OpenAI API Key 또는 OAuth 인증이 필요합니다.');
         error.code = 'OPENAI_AUTH_REQUIRED';
         throw error;
       }
@@ -704,7 +926,7 @@ async function callModel(config, payload) {
       }, {
         timeout: requestTimeout,
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${credential.token}`,
           'Content-Type': 'application/json'
         }
       });
@@ -712,9 +934,9 @@ async function callModel(config, payload) {
     }
 
     if (selectedModel.provider === 'moonshot') {
-      const apiKey = process.env.MOONSHOT_API_KEY;
-      if (!apiKey) {
-        const error = new Error('MOONSHOT_API_KEY 환경 변수가 필요합니다.');
+      const credential = providerCredential('moonshot');
+      if (!credential.token) {
+        const error = new Error('Kimi API Key 또는 OAuth 인증이 필요합니다.');
         error.code = 'MOONSHOT_AUTH_REQUIRED';
         throw error;
       }
@@ -727,7 +949,7 @@ async function callModel(config, payload) {
       }, {
         timeout: requestTimeout,
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${credential.token}`,
           'Content-Type': 'application/json'
         }
       });
@@ -830,15 +1052,15 @@ async function testLlmConnection(config, payload = {}) {
       return result;
     }
 
-    const apiKey = selectedRef.provider === 'openai' ? process.env.OPENAI_API_KEY : process.env.MOONSHOT_API_KEY;
-    if (!apiKey) {
+    const credential = providerCredential(selectedRef.provider);
+    if (!credential.token) {
       result.authRequired = true;
       result.authUrl = selectedRef.provider === 'openai'
         ? 'https://platform.openai.com/settings/organization/api-keys'
         : 'https://platform.moonshot.ai/console/api-keys';
       result.error = selectedRef.provider === 'openai'
-        ? 'OPENAI_API_KEY 환경 변수가 필요합니다.'
-        : 'MOONSHOT_API_KEY 환경 변수가 필요합니다.';
+        ? 'OpenAI API Key 또는 OAuth 인증이 필요합니다.'
+        : 'Kimi API Key 또는 OAuth 인증이 필요합니다.';
       result.latencyMs = Date.now() - startedAt;
       result.stages.push({ name: 'auth', ok: false, error: result.error });
       return result;
@@ -1377,6 +1599,83 @@ async function handleApi(req, res, pathname, url) {
     return;
   }
 
+  if (req.method === 'GET' && pathname === '/api/llm/providers') {
+    sendJson(res, 200, { ok: true, providers: getProviderSummaries() });
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/llm/credentials') {
+    try {
+      const body = await readJsonBody(req);
+      const provider = cleanText(body.provider, 40);
+      const apiKey = cleanText(body.apiKey, 3000);
+      const meta = providerConfig(provider);
+      if (!meta) {
+        sendJson(res, 400, { ok: false, error: 'PROVIDER_NOT_FOUND' });
+        return;
+      }
+      if (!apiKey) {
+        sendJson(res, 400, { ok: false, error: 'API_KEY_REQUIRED' });
+        return;
+      }
+      const credentials = readLlmCredentials();
+      credentials[provider] = {
+        ...(credentials[provider] || {}),
+        apiKey,
+        method: 'apiKey',
+        savedAt: nowIso()
+      };
+      writeLlmCredentials(credentials);
+      sendJson(res, 200, { ok: true, provider: getProviderSummaries().find((item) => item.id === provider) });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message || String(error) });
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && pathname.startsWith('/api/llm/credentials/')) {
+    const provider = decodeURIComponent(pathname.slice('/api/llm/credentials/'.length));
+    const meta = providerConfig(provider);
+    if (!meta) {
+      sendJson(res, 404, { ok: false, error: 'PROVIDER_NOT_FOUND' });
+      return;
+    }
+    const credentials = readLlmCredentials();
+    delete credentials[provider];
+    writeLlmCredentials(credentials);
+    sendJson(res, 200, { ok: true, provider: getProviderSummaries().find((item) => item.id === provider) });
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/llm/oauth/start') {
+    try {
+      const body = await readJsonBody(req);
+      const provider = cleanText(body.provider, 40);
+      const result = createOAuthFlow(req, provider);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message || String(error) });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/llm/oauth/status') {
+    const provider = cleanText(url.searchParams.get('provider') || '', 40);
+    const flowId = url.searchParams.get('flowId') || '';
+    const flow = flowId ? oauthFlows.get(flowId) : null;
+    const summary = getProviderSummaries().find((item) => item.id === provider) || null;
+    sendJson(res, 200, {
+      ok: true,
+      provider: summary,
+      flow: flow ? {
+        id: flowId,
+        status: flow.status,
+        error: flow.error || ''
+      } : null
+    });
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/api/models') {
     try {
       const result = await listModelOptions(config);
@@ -1525,6 +1824,10 @@ async function handleApi(req, res, pathname, url) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    if (url.pathname.startsWith('/oauth/') && url.pathname.endsWith('/callback')) {
+      await handleOAuthCallback(req, res, url);
+      return;
+    }
     if (url.pathname.startsWith('/api/')) {
       await handleApi(req, res, url.pathname, url);
       return;

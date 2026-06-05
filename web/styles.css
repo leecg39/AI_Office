@@ -915,6 +915,123 @@ h2 { font-size: 18px; }
   min-width: 104px;
 }
 
+.hidden { display: none !important; }
+
+.api-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: start end;
+  padding: 18px;
+}
+
+.api-backdrop {
+  position: absolute;
+  inset: 0;
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(0, 0, 0, 0.58);
+  cursor: default;
+}
+
+.api-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b1115;
+  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.48);
+}
+
+.api-head,
+.api-provider-head,
+.api-action-row,
+.api-key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.api-head,
+.api-provider-head {
+  justify-content: space-between;
+}
+
+.api-provider-list {
+  display: grid;
+  gap: 10px;
+}
+
+.api-provider {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.api-provider.connected {
+  border-color: rgba(34, 229, 142, 0.35);
+  background: rgba(34, 229, 142, 0.06);
+}
+
+.api-provider strong,
+.api-provider span {
+  display: block;
+}
+
+.api-provider span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.api-status {
+  flex: 0 0 auto;
+  min-width: 72px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.api-status.connected {
+  border-color: rgba(34, 229, 142, 0.5);
+  color: var(--green);
+}
+
+.api-key-row {
+  align-items: stretch;
+}
+
+.api-key-row input {
+  min-width: 0;
+}
+
+.api-key-row button {
+  flex: 0 0 88px;
+}
+
+.api-action-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+button.danger-outline {
+  border-color: rgba(255, 95, 109, 0.38);
+  color: #ffc5ca;
+  background: rgba(255, 95, 109, 0.1);
+}
+
 .event-row {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr) 92px;
@@ -961,7 +1078,13 @@ h2 { font-size: 18px; }
 
   .inline-form,
   .search-form,
-  .split {
+  .split,
+  .api-action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .api-key-row {
+    display: grid;
     grid-template-columns: 1fr;
   }
 

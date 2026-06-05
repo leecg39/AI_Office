@@ -58,7 +58,7 @@
             <p id="companyName" class="eyebrow">Connect AI Company</p>
             <h1>AI 1인 기업 운영실</h1>
           </div>
-          <a id="statusLink" href="/api/dashboard" target="_blank" rel="noreferrer">API</a>
+          <button id="apiPanelToggle" type="button" class="secondary api-toggle">API</button>
         </header>
 
         <section class="overview">
@@ -168,6 +168,20 @@
           <div id="eventsList" class="events-list"></div>
         </section>
       </main>
+    </div>
+    <div id="apiPanel" class="api-panel hidden" aria-hidden="true">
+      <button class="api-backdrop" type="button" data-close-api aria-label="닫기"></button>
+      <section class="api-dialog" role="dialog" aria-modal="true" aria-labelledby="apiPanelTitle">
+        <div class="api-head">
+          <div>
+            <div class="section-kicker">LLM API</div>
+            <h2 id="apiPanelTitle">연결</h2>
+          </div>
+          <button id="apiPanelClose" type="button" class="secondary small">Close</button>
+        </div>
+        <div id="apiProviderList" class="api-provider-list"></div>
+        <div id="apiPanelResult" class="test-result" aria-live="polite"></div>
+      </section>
     </div>
     <script src="/app.js"></script>
   </body>
