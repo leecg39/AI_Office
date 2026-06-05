@@ -24,6 +24,10 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function safeDomId(value) {
+  return String(value || 'item').replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
 function fmtTime(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -358,9 +362,7 @@ function renderApiProviders() {
   }).join('');
 }
 
-function renderOfficeActivity() {
-  const layer = $('officeAgents');
-  if (!layer) return;
+function openTasksByAgent() {
   const tasks = state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all : [];
   const open = tasks.filter((task) => task.status !== 'done' && task.status !== 'cancelled');
   const byAgent = new Map();
@@ -368,22 +370,92 @@ function renderOfficeActivity() {
     if (!byAgent.has(task.agent)) byAgent.set(task.agent, []);
     byAgent.get(task.agent).push(task);
   });
+  return byAgent;
+}
+
+function flowPathForPosition(pos, index, total) {
+  const spread = (index - ((total - 1) / 2)) * 4;
+  const startX = Math.min(72, Math.max(28, 50 + spread));
+  const startY = 90;
+  const targetX = Math.min(98, Math.max(2, pos.x));
+  const targetY = Math.min(95, Math.max(5, pos.y + 5));
+  const elbowY = Math.min(86, Math.max(28, (startY + targetY) / 2));
+  return `M ${startX.toFixed(2)} ${startY.toFixed(2)} L ${startX.toFixed(2)} ${elbowY.toFixed(2)} L ${targetX.toFixed(2)} ${elbowY.toFixed(2)} L ${targetX.toFixed(2)} ${targetY.toFixed(2)}`;
+}
+
+function renderOfficeFlow(flow, byAgent) {
+  if (!flow) return;
+  const workingAgents = state.agents.filter((agent) => byAgent.has(agent.id));
+  if (!workingAgents.length) {
+    flow.innerHTML = '';
+    flow.classList.add('idle');
+    return;
+  }
+
+  flow.classList.remove('idle');
+  const defs = `
+    <defs>
+      <marker id="flowArrow" markerWidth="5" markerHeight="5" refX="3.9" refY="2.5" orient="auto" markerUnits="strokeWidth">
+        <path d="M 0 0 L 5 2.5 L 0 5 Z" fill="#eaffff"></path>
+      </marker>
+    </defs>
+  `;
+  const paths = workingAgents.map((agent, index) => {
+    const task = byAgent.get(agent.id)[0] || {};
+    const pos = officePositions[agent.id] || { x: 50, y: 50 };
+    const path = flowPathForPosition(pos, index, workingAgents.length);
+    const routeId = `flow-route-${safeDomId(agent.id)}`;
+    const accent = escapeHtml(agent.accent || '#35c8ff');
+    const delay = `${(index * -0.32).toFixed(2)}s`;
+    const title = task.title ? `${agent.name}: ${task.title}` : `${agent.name}: 작업 중`;
+    const runners = [0, 0.68, 1.36].map((offset) => `
+      <polygon class="flow-runner" points="-0.85,-0.7 1.65,0 -0.85,0.7">
+        <animateMotion dur="3.6s" begin="${(index * 0.18 + offset).toFixed(2)}s" repeatCount="indefinite" rotate="auto">
+          <mpath href="#${routeId}"></mpath>
+        </animateMotion>
+      </polygon>
+    `).join('');
+    return `
+      <g class="flow-route" style="--accent:${accent};--delay:${delay}">
+        <title>${escapeHtml(title)}</title>
+        <path id="${routeId}" class="flow-motion-path" d="${path}"></path>
+        <path class="flow-track" d="${path}"></path>
+        <path class="flow-line" d="${path}"></path>
+        <path class="flow-pulse" d="${path}"></path>
+        ${runners}
+        <path class="flow-direction" d="${path}" marker-end="url(#flowArrow)"></path>
+        <circle class="flow-node" cx="${Number(pos.x).toFixed(2)}" cy="${Number(pos.y).toFixed(2)}" r="1.1"></circle>
+      </g>
+    `;
+  }).join('');
+  flow.innerHTML = `${defs}${paths}`;
+}
+
+function refreshOfficeFlow() {
+  renderOfficeFlow($('officeFlow'), openTasksByAgent());
+}
+
+function renderOfficeActivity() {
+  const layer = $('officeAgents');
+  if (!layer) return;
+  const byAgent = openTasksByAgent();
+  renderOfficeFlow($('officeFlow'), byAgent);
   const markers = state.agents.map((agent) => {
     const agentTasks = byAgent.get(agent.id) || [];
     const task = agentTasks[0];
     const pos = officePositions[agent.id] || { x: 50, y: 50 };
     const hasWork = agentTasks.length > 0;
-    const progress = hasWork && task.progress ? task.progress : { percent: 0, label: '대기' };
+    const progress = hasWork && task.progress ? task.progress : { percent: 0, label: '대기 중' };
     const title = hasWork
       ? `${agent.name}: ${task.title} (${progress.percent}%)`
-      : `${agent.name}: ${agent.role}`;
+      : `${agent.name}: ${progress.label}`;
     const taskAttr = hasWork ? ` data-task-id="${escapeHtml(task.id)}"` : '';
     return `
       <button type="button" class="office-agent-marker ${hasWork ? 'working' : 'seated'}"${taskAttr} data-agent-id="${escapeHtml(agent.id)}" aria-label="${escapeHtml(title)}" title="${escapeHtml(title)}" style="--x:${pos.x};--y:${pos.y};--accent:${escapeHtml(agent.accent || '#22e58e')}">
         <span class="marker-avatar">${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="${escapeHtml(agent.name)}">` : escapeHtml(agent.emoji || '')}</span>
         <span class="marker-work">
           <strong>${escapeHtml(agent.name)}</strong>
-          <em>${hasWork ? escapeHtml(progress.label) : escapeHtml(agent.role)}</em>
+          <em>${escapeHtml(progress.label)}</em>
         </span>
       </button>
     `;
@@ -409,10 +481,15 @@ function bindOfficeMarkerDrag(button, layer) {
     if (event.button !== 0) return;
     const agentId = button.dataset.agentId;
     if (!agentId) return;
+
+    event.preventDefault();
     const rect = layer.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
     let moved = false;
     button.classList.add('dragging');
-    button.setPointerCapture(event.pointerId);
+    button.dataset.dragged = 'false';
+    if (button.setPointerCapture) button.setPointerCapture(event.pointerId);
 
     const moveTo = (clientX, clientY) => {
       const x = Math.min(98, Math.max(2, ((clientX - rect.left) / rect.width) * 100));
@@ -420,28 +497,41 @@ function bindOfficeMarkerDrag(button, layer) {
       officePositions[agentId] = { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
       button.style.setProperty('--x', officePositions[agentId].x);
       button.style.setProperty('--y', officePositions[agentId].y);
+      refreshOfficeFlow();
     };
 
     const onPointerMove = (moveEvent) => {
-      moved = true;
+      if (!button.classList.contains('dragging')) return;
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) > 4) {
+        moved = true;
+        button.dataset.dragged = 'true';
+      }
+      if (!moved) return;
+      moveEvent.preventDefault();
       moveTo(moveEvent.clientX, moveEvent.clientY);
     };
 
     const onPointerUp = () => {
+      if (!button.classList.contains('dragging')) return;
       button.classList.remove('dragging');
-      button.releasePointerCapture(event.pointerId);
-      button.removeEventListener('pointermove', onPointerMove);
-      button.removeEventListener('pointerup', onPointerUp);
-      button.removeEventListener('pointercancel', onPointerUp);
+      if (button.releasePointerCapture) {
+        try {
+          button.releasePointerCapture(event.pointerId);
+        } catch {}
+      }
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
       if (moved) {
-        button.dataset.dragged = 'true';
         saveOfficePositions();
       }
     };
 
-    button.addEventListener('pointermove', onPointerMove);
-    button.addEventListener('pointerup', onPointerUp);
-    button.addEventListener('pointercancel', onPointerUp);
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   });
 }
 

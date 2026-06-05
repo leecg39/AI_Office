@@ -368,8 +368,87 @@ h2 { font-size: 18px; }
 .office-agents {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 3;
   pointer-events: none;
+}
+
+.office-flow {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  color: var(--cyan);
+  mix-blend-mode: screen;
+  opacity: 0.94;
+  pointer-events: none;
+}
+
+.office-flow.idle {
+  opacity: 0;
+}
+
+.flow-route {
+  color: var(--accent);
+}
+
+.flow-track,
+.flow-line,
+.flow-pulse,
+.flow-motion-path,
+.flow-direction {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.flow-motion-path {
+  stroke: none;
+}
+
+.flow-track {
+  stroke: rgba(92, 214, 255, 0.18);
+  stroke-width: 3.1;
+}
+
+.flow-line {
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-dasharray: 5 7;
+  stroke-dashoffset: 0;
+  animation: floorFlow 2.8s linear infinite;
+  animation-delay: var(--delay);
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.flow-pulse {
+  stroke: #eaffff;
+  stroke-width: 2.1;
+  stroke-dasharray: 0.7 13;
+  stroke-dashoffset: 0;
+  opacity: 0.8;
+  animation: floorPulse 3.6s linear infinite;
+  animation-delay: var(--delay);
+}
+
+.flow-direction {
+  stroke: currentColor;
+  stroke-width: 0.85;
+  opacity: 0.86;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+.flow-node {
+  fill: currentColor;
+  opacity: 0.96;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.flow-runner {
+  fill: currentColor;
+  opacity: 0.86;
+  filter: drop-shadow(0 0 5px currentColor);
 }
 
 .office-agent-marker {
@@ -420,6 +499,7 @@ h2 { font-size: 18px; }
   width: 100%;
   height: 100%;
   object-fit: cover;
+  pointer-events: none;
 }
 
 .marker-work {
@@ -436,14 +516,12 @@ h2 { font-size: 18px; }
   display: grid;
   gap: 1px;
   text-align: center;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.16s ease;
 }
 
-.office-agent-marker:hover .marker-work,
-.office-agent-marker:focus-visible .marker-work,
-.office-agent-marker.working .marker-work {
-  opacity: 1;
+.office-agent-marker .marker-work {
+  pointer-events: none;
 }
 
 .marker-work strong,
@@ -468,9 +546,18 @@ h2 { font-size: 18px; }
   50% { filter: drop-shadow(0 0 16px color-mix(in srgb, var(--accent) 62%, transparent)); }
 }
 
+@keyframes floorFlow {
+  to { stroke-dashoffset: -24; }
+}
+
+@keyframes floorPulse {
+  to { stroke-dashoffset: -28; }
+}
+
 .office-map img {
   position: absolute;
   inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -482,6 +569,7 @@ h2 { font-size: 18px; }
   position: absolute;
   left: 16px;
   bottom: 16px;
+  z-index: 4;
   display: grid;
   gap: 3px;
   padding: 10px 12px;
@@ -1273,5 +1361,17 @@ button.danger-outline {
 
   .event-row {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-line,
+  .flow-pulse,
+  .office-agent-marker.working {
+    animation: none;
+  }
+
+  .flow-runner {
+    display: none;
   }
 }
