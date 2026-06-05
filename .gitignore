@@ -1,0 +1,20 @@
+node_modules/
+out/
+*.vsix
+.vscode-test/
+preview.html
+.DS_Store
+.claude/
+releases/
+.env
+*.bak.*
+web/config.local.json
+web/data/
+
+# Large raw pixel asset packs. Keep the slim runtime assets in
+# assets/pixel/office/, assets/pixel/interior/, and assets/pixel/characters/*.png.
+assets/pixel/modernexteriors-win/
+assets/pixel/moderninteriors-win/
+assets/pixel/Modern_Office_Revamped_v1/
+assets/pixel/characters/moderninteriors-win/
+assets/pixel/characters/Modern_Office_Revamped_v1/

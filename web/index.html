@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connect AI Web</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand-row">
+          <img class="brand-icon" src="/assets/icon.png" alt="Connect AI">
+          <div>
+            <div class="brand-title">Connect AI</div>
+            <div class="brand-sub">Standalone Web</div>
+          </div>
+        </div>
+
+        <section class="panel runtime-panel">
+          <div class="panel-title">Runtime</div>
+          <div class="kv"><span>Server</span><strong id="serverState">checking</strong></div>
+          <div class="kv"><span>Brain</span><strong id="brainState">-</strong></div>
+          <div class="kv"><span>Session</span><strong id="sessionState">new</strong></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Settings</div>
+          <label class="field">
+            <span>LLM URL</span>
+            <input id="ollamaBase" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <select id="modelSelect"></select>
+          </label>
+          <label class="field">
+            <span>Brain Folder</span>
+            <input id="brainPath" autocomplete="off">
+          </label>
+          <div class="button-row settings-actions">
+            <button id="saveConfig" type="button">Save</button>
+            <button id="refreshModels" type="button" class="secondary">Refresh</button>
+            <button id="testLlm" type="button" class="secondary">LLM Test</button>
+          </div>
+          <div id="llmTestResult" class="test-result" aria-live="polite"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">Agents</div>
+          <div id="agentList" class="agent-list"></div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p id="companyName" class="eyebrow">Connect AI Company</p>
+            <h1>AI 1인 기업 운영실</h1>
+          </div>
+          <a id="statusLink" href="/api/dashboard" target="_blank" rel="noreferrer">API</a>
+        </header>
+
+        <section class="overview">
+          <div class="office-map">
+            <img src="/assets/map.jpeg" alt="Connect AI office map">
+            <div id="officeAgents" class="office-agents" aria-label="Agent work activity"></div>
+            <div class="office-copy">
+              <span id="selectedAgentName">CEO</span>
+              <strong>Virtual Office</strong>
+            </div>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi"><span>Open Tasks</span><strong id="kpiOpen">0</strong></div>
+            <div class="kpi"><span>Approvals</span><strong id="kpiApprovals">0</strong></div>
+            <div class="kpi"><span>Brain Files</span><strong id="kpiBrain">0</strong></div>
+            <div class="kpi"><span>Sessions</span><strong id="kpiSessions">0</strong></div>
+          </div>
+        </section>
+
+        <section id="teamGrid" class="team-grid" aria-label="Agent team"></section>
+
+        <div class="work-grid">
+          <section class="surface">
+            <div class="surface-head">
+              <div>
+                <div class="section-kicker">Work Queue</div>
+                <h2>작업</h2>
+              </div>
+              <button id="refreshDashboard" type="button" class="secondary small">Refresh</button>
+            </div>
+            <form id="taskForm" class="inline-form">
+              <input id="taskTitle" placeholder="새 작업 제목">
+              <select id="taskAgent"></select>
+              <select id="taskPriority">
+                <option value="normal">normal</option>
+                <option value="high">high</option>
+                <option value="urgent">urgent</option>
+                <option value="low">low</option>
+              </select>
+              <button type="submit">Add</button>
+            </form>
+            <div id="taskList" class="item-list"></div>
+            <aside id="taskDetail" class="task-detail" aria-live="polite"></aside>
+          </section>
+
+          <section class="surface">
+            <div class="surface-head">
+              <div>
+                <div class="section-kicker">Approval Gate</div>
+                <h2>승인</h2>
+              </div>
+            </div>
+            <form id="approvalForm" class="stack-form">
+              <input id="approvalTitle" placeholder="승인 제목">
+              <div class="split">
+                <select id="approvalAgent"></select>
+                <input id="approvalKind" placeholder="kind" value="general">
+              </div>
+              <textarea id="approvalSummary" rows="3" placeholder="승인 내용 요약"></textarea>
+              <button type="submit">Queue</button>
+            </form>
+            <div id="approvalList" class="item-list"></div>
+          </section>
+        </div>
+
+        <div class="work-grid bottom-grid">
+          <section class="surface">
+            <div class="surface-head">
+              <div>
+                <div class="section-kicker">Second Brain</div>
+                <h2>검색</h2>
+              </div>
+            </div>
+            <form id="brainSearchForm" class="search-form">
+              <input id="brainQuery" placeholder="지식 파일 검색어">
+              <button type="submit">Search</button>
+            </form>
+            <div id="brainResults" class="brain-results"></div>
+          </section>
+
+          <section class="surface chat-surface">
+            <div class="surface-head">
+              <div>
+                <div class="section-kicker">Agent Console</div>
+                <h2>채팅</h2>
+              </div>
+              <label class="brain-toggle"><input id="useBrain" type="checkbox"> Brain</label>
+            </div>
+            <section id="chatLog" class="chat-log" aria-live="polite"></section>
+            <form id="chatForm" class="composer">
+              <textarea id="messageInput" rows="3" placeholder="에이전트에게 요청하세요"></textarea>
+              <div class="composer-footer">
+                <span id="hint">Enter 전송, Shift+Enter 줄바꿈</span>
+                <button id="sendButton" type="submit">Send</button>
+              </div>
+            </form>
+          </section>
+        </div>
+
+        <section class="surface events-surface">
+          <div class="surface-head">
+            <div>
+              <div class="section-kicker">Activity</div>
+              <h2>최근 이벤트</h2>
+            </div>
+          </div>
+          <div id="eventsList" class="events-list"></div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

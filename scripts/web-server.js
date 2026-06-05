@@ -1,0 +1,1214 @@
+#!/usr/bin/env node
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { randomUUID } = require('crypto');
+const axios = require('axios');
+
+const ROOT = path.resolve(__dirname, '..');
+const WEB_DIR = path.join(ROOT, 'web');
+const ASSETS_DIR = path.join(ROOT, 'assets');
+const DATA_DIR = path.join(WEB_DIR, 'data');
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const LOCAL_CONFIG = path.join(WEB_DIR, 'config.local.json');
+const PORT = Number(process.env.CONNECT_AI_WEB_PORT || process.env.PORT || 8788);
+const MAX_BODY = 2 * 1024 * 1024;
+const BRAIN_CACHE_TTL_MS = 10 * 1000;
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8'
+};
+
+function resolveAgentImage(fileName) {
+  if (!fileName) return '';
+  try {
+    const wanted = fileName.normalize('NFC');
+    const found = fs.readdirSync(path.join(ASSETS_DIR, 'agents'))
+      .find((name) => name.normalize('NFC') === wanted);
+    return found ? `/assets/agents/${encodeURIComponent(found)}` : '';
+  } catch {
+    return '';
+  }
+}
+
+const AGENTS = [
+  {
+    id: 'ceo',
+    name: 'CEO',
+    role: 'Chief Executive Agent',
+    emoji: '🧭',
+    accent: '#f8fafc',
+    specialty: '작업 분해, 종합 판단, 다음 액션 결정',
+    tagline: '회사 전체 의사결정과 작업 분배를 맡습니다'
+  },
+  {
+    id: 'youtube',
+    name: '레오',
+    role: 'Head of YouTube',
+    emoji: '📺',
+    accent: '#ff4444',
+    specialty: '영상 기획, 트렌드 분석, 업로드 전략',
+    tagline: '채널 운영과 콘텐츠 전략을 담당합니다',
+    avatar: resolveAgentImage('leo_profile.png')
+  },
+  {
+    id: 'developer',
+    name: '코다리',
+    role: '시니어 풀스택 엔지니어',
+    emoji: '💻',
+    accent: '#22d3ee',
+    specialty: '코드 작성, 디버깅, API 통합, 자동화',
+    tagline: '읽고, 짜고, 검증하는 개발 담당입니다',
+    avatar: resolveAgentImage('코다리.png')
+  },
+  {
+    id: 'business',
+    name: '현빈',
+    role: '비즈니스 전략가',
+    emoji: '💼',
+    accent: '#f5c518',
+    specialty: '수익화, 가격 전략, 시장 분석',
+    tagline: '비즈니스 판단과 KPI를 같이 봅니다',
+    avatar: resolveAgentImage('현빈.jpeg')
+  },
+  {
+    id: 'secretary',
+    name: '영숙',
+    role: '비서 · Personal Assistant',
+    emoji: '📱',
+    accent: '#84cc16',
+    specialty: '일정, 할 일, 보고, 알림',
+    tagline: '오늘 해야 할 일을 정리하고 챙깁니다',
+    avatar: resolveAgentImage('영숙에이전트비서.jpeg')
+  },
+  {
+    id: 'editor',
+    name: '루나',
+    role: 'Sound Director & Composer',
+    emoji: '🎵',
+    accent: '#f472b6',
+    specialty: 'BGM, 사운드 디자인, 영상 오디오',
+    tagline: '영상에 맞는 사운드 감각을 더합니다',
+    avatar: resolveAgentImage('luna_greeting_pixar.png')
+  },
+  {
+    id: 'designer',
+    name: 'Designer',
+    role: 'Lead Designer',
+    emoji: '🎨',
+    accent: '#a78bfa',
+    specialty: '브랜드, 썸네일, 디자인 시스템',
+    tagline: '시각 자산과 화면 품질을 담당합니다'
+  },
+  {
+    id: 'writer',
+    name: 'Writer',
+    role: 'Copywriter',
+    emoji: '✍️',
+    accent: '#fbbf24',
+    specialty: '카피, 스크립트, 후크 작성',
+    tagline: '글과 메시지를 선명하게 만듭니다'
+  },
+  {
+    id: 'researcher',
+    name: 'Researcher',
+    role: 'Trend & Data Researcher',
+    emoji: '🔍',
+    accent: '#60a5fa',
+    specialty: '리서치, 경쟁 분석, 사실 확인',
+    tagline: '근거와 자료를 찾아 정리합니다'
+  }
+];
+
+const DEFAULT_STATE = {
+  schemaVersion: 1,
+  sessions: [],
+  tasks: [],
+  approvals: [],
+  agentState: {},
+  events: []
+};
+
+const brainCache = new Map();
+
+function expandHome(input) {
+  if (!input) return '';
+  const trimmed = String(input).trim();
+  if (trimmed === '~') return os.homedir();
+  if (trimmed.startsWith('~/')) return path.join(os.homedir(), trimmed.slice(2));
+  return trimmed;
+}
+
+function stripJsonComments(text) {
+  return String(text)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+    .replace(/,\s*([}\]])/g, '$1');
+}
+
+function readJson(file, fallback = {}) {
+  try {
+    return JSON.parse(stripJsonComments(fs.readFileSync(file, 'utf8')));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function readVsCodeSettings() {
+  const candidates = [
+    path.join(os.homedir(), 'Library', 'Application Support', 'Code', 'User', 'settings.json'),
+    path.join(os.homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'settings.json')
+  ];
+  for (const file of candidates) {
+    if (fs.existsSync(file)) return readJson(file);
+  }
+  return {};
+}
+
+function getConfig() {
+  const local = readJson(LOCAL_CONFIG);
+  const settings = readVsCodeSettings();
+  const ollamaBase = process.env.CONNECT_AI_LLM_URL
+    || local.ollamaBase
+    || settings['connectAiLab.ollamaUrl']
+    || 'http://127.0.0.1:1234';
+  const defaultModel = process.env.CONNECT_AI_MODEL
+    || local.defaultModel
+    || settings['connectAiLab.defaultModel']
+    || '';
+  const localBrainPath = expandHome(process.env.CONNECT_AI_BRAIN
+    || local.localBrainPath
+    || settings['connectAiLab.localBrainPath']
+    || path.join(os.homedir(), '.connect-ai-brain'));
+  const timeoutMs = Number(process.env.CONNECT_AI_TIMEOUT_MS
+    || local.timeoutMs
+    || ((settings['connectAiLab.requestTimeout'] || 300) * 1000));
+  const chatTimeoutMs = Number(process.env.CONNECT_AI_CHAT_TIMEOUT_MS
+    || local.chatTimeoutMs
+    || Math.min(timeoutMs || 300000, 45000));
+  return {
+    ollamaBase: String(ollamaBase).replace(/\/+$/, ''),
+    defaultModel: String(defaultModel || ''),
+    localBrainPath,
+    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 300000,
+    chatTimeoutMs: Number.isFinite(chatTimeoutMs) ? chatTimeoutMs : 45000
+  };
+}
+
+function loadState() {
+  const stored = readJson(STATE_FILE, {});
+  return {
+    ...DEFAULT_STATE,
+    ...stored,
+    sessions: Array.isArray(stored.sessions) ? stored.sessions : [],
+    tasks: Array.isArray(stored.tasks) ? stored.tasks : [],
+    approvals: Array.isArray(stored.approvals) ? stored.approvals : [],
+    agentState: stored.agentState && typeof stored.agentState === 'object' ? stored.agentState : {},
+    events: Array.isArray(stored.events) ? stored.events : []
+  };
+}
+
+function saveState(state) {
+  writeJson(STATE_FILE, {
+    ...state,
+    sessions: state.sessions.slice(0, 60),
+    tasks: state.tasks.slice(0, 300),
+    approvals: state.approvals.slice(0, 300),
+    events: state.events.slice(0, 120)
+  });
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function newId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+}
+
+function cleanText(value, max = 4000) {
+  return String(value || '').replace(/\0/g, '').trim().slice(0, max);
+}
+
+function pushEvent(state, type, title, meta = {}) {
+  state.events.unshift({
+    id: newId('evt'),
+    type,
+    title: cleanText(title, 240),
+    agent: meta.agent || '',
+    createdAt: nowIso()
+  });
+  state.events = state.events.slice(0, 120);
+}
+
+function sendJson(res, status, value) {
+  const body = JSON.stringify(value);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body)
+  });
+  res.end(body);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > MAX_BODY) {
+        reject(new Error('BODY_TOO_LARGE'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+async function readJsonBody(req) {
+  const text = await readBody(req);
+  if (!text.trim()) return {};
+  return JSON.parse(text);
+}
+
+function safeJoin(root, requestPath) {
+  const decoded = decodeURIComponent(requestPath.split('?')[0]);
+  const normalized = path.normalize(decoded).replace(/^(\.\.[/\\])+/, '');
+  const full = path.resolve(root, normalized.replace(/^[/\\]/, ''));
+  if (!full.startsWith(root + path.sep) && full !== root) return null;
+  return full;
+}
+
+function serveFile(res, file) {
+  if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+  const ext = path.extname(file).toLowerCase();
+  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+  fs.createReadStream(file).pipe(res);
+}
+
+function resolveCompanyDir(config) {
+  const root = config.localBrainPath;
+  const candidates = [
+    root,
+    path.join(root, '_company'),
+    path.join(root, 'AI_COMPANY'),
+    path.join(root, 'company')
+  ];
+  return candidates.find((dir) => {
+    try {
+      return fs.existsSync(path.join(dir, 'company_state.json'))
+        || fs.existsSync(path.join(dir, '_shared', 'active.json'))
+        || fs.existsSync(path.join(dir, '_shared', 'tracker.json'))
+        || fs.existsSync(path.join(dir, 'approvals', 'pending'));
+    } catch {
+      return false;
+    }
+  }) || root;
+}
+
+function readCompanyState(config) {
+  const companyDir = resolveCompanyDir(config);
+  const direct = readJson(path.join(companyDir, 'company_state.json'), null);
+  const root = readJson(path.join(config.localBrainPath, 'company_state.json'), null);
+  return direct || root || {};
+}
+
+function readActiveAgents(config) {
+  const companyDir = resolveCompanyDir(config);
+  const direct = readJson(path.join(companyDir, '_shared', 'active.json'), null);
+  const root = readJson(path.join(config.localBrainPath, '_company', '_shared', 'active.json'), null);
+  return direct || root || {};
+}
+
+function externalTrackerTasks(config) {
+  const companyDir = resolveCompanyDir(config);
+  const tracker = readJson(path.join(companyDir, '_shared', 'tracker.json'), { tasks: [] });
+  return Array.isArray(tracker.tasks) ? tracker.tasks.map((task) => ({
+    id: String(task.id || newId('exttask')),
+    title: cleanText(task.title || task.task || '작업', 500),
+    description: cleanText(task.description || '', 1000),
+    agent: Array.isArray(task.agentIds) && task.agentIds[0] ? task.agentIds[0] : cleanText(task.owner || '', 80),
+    priority: task.priority || 'normal',
+    status: task.status || 'open',
+    dueAt: task.dueAt || '',
+    createdAt: task.createdAt || '',
+    updatedAt: task.updatedAt || '',
+    source: 'company'
+  })) : [];
+}
+
+function parseApprovalMarkdown(file) {
+  const text = fs.readFileSync(file, 'utf8');
+  const lines = text.split(/\r?\n/);
+  const titleLine = lines.find((line) => line.trim().startsWith('#'));
+  const title = titleLine ? titleLine.replace(/^#+\s*/, '').trim() : path.basename(file, '.md');
+  const summary = lines
+    .filter((line) => line.trim() && !line.trim().startsWith('#') && !line.includes('---'))
+    .slice(0, 4)
+    .join(' ')
+    .slice(0, 500);
+  return {
+    id: path.basename(file, '.md'),
+    title,
+    summary,
+    kind: 'file',
+    agent: '',
+    status: 'pending',
+    createdAt: fs.statSync(file).mtime.toISOString(),
+    source: 'company'
+  };
+}
+
+function externalApprovals(config) {
+  const pendingDir = path.join(resolveCompanyDir(config), 'approvals', 'pending');
+  try {
+    if (!fs.existsSync(pendingDir)) return [];
+    return fs.readdirSync(pendingDir)
+      .filter((name) => name.endsWith('.md'))
+      .slice(0, 40)
+      .map((name) => parseApprovalMarkdown(path.join(pendingDir, name)));
+  } catch {
+    return [];
+  }
+}
+
+function moveExternalApproval(config, id, action) {
+  const companyDir = resolveCompanyDir(config);
+  const pending = safeJoin(path.join(companyDir, 'approvals', 'pending'), `${id}.md`);
+  if (!pending || !fs.existsSync(pending)) return false;
+  const historyDir = path.join(companyDir, 'approvals', 'history');
+  fs.mkdirSync(historyDir, { recursive: true });
+  fs.renameSync(pending, path.join(historyDir, `${Date.now()}-${action}-${path.basename(pending)}`));
+  return true;
+}
+
+function termsFromMessage(message) {
+  return String(message || '')
+    .replace(/[^\p{L}\p{N}\s_-]/gu, ' ')
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2)
+    .slice(0, 12);
+}
+
+function walkBrain(root, opts = {}) {
+  const limit = Math.min(Number(opts.limit) || 120, 700);
+  const snippets = opts.snippets || false;
+  const terms = (opts.terms || []).map((term) => String(term).toLowerCase()).filter(Boolean);
+  const snippetChars = Math.min(Number(opts.snippetChars) || 1200, 4000);
+  const cacheKey = JSON.stringify({ root, limit, snippets, terms, snippetChars });
+  const cached = brainCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < BRAIN_CACHE_TTL_MS) return cached.value;
+
+  const skipDirs = new Set([
+    '.git',
+    '.hg',
+    '.svn',
+    '.obsidian',
+    '.next',
+    '.turbo',
+    'node_modules',
+    'dist',
+    'out',
+    'build',
+    'coverage',
+    'Library',
+    'Caches'
+  ]);
+  const files = [];
+  let capped = false;
+
+  function scoreText(rel, text) {
+    if (terms.length === 0) return 0;
+    const hay = `${rel}\n${text}`.toLowerCase();
+    return terms.reduce((sum, term) => sum + (hay.includes(term) ? 1 : 0), 0);
+  }
+
+  function walk(dir, depth) {
+    if (capped || depth > 7) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (capped) return;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!skipDirs.has(entry.name)) walk(full, depth + 1);
+        continue;
+      }
+      if (!entry.name.endsWith('.md') && !entry.name.endsWith('.txt')) continue;
+      const rel = path.relative(root, full);
+      let firstLine = '';
+      let snippet = '';
+      try {
+        const text = fs.readFileSync(full, 'utf8');
+        firstLine = text.split(/\r?\n/).find((line) => line.trim()) || '';
+        snippet = snippets ? text.slice(0, snippetChars) : '';
+      } catch {
+        // Keep the file path even when the file cannot be read.
+      }
+      const score = scoreText(rel, `${firstLine}\n${snippet}`);
+      if (terms.length === 0 || score > 0) {
+        files.push({
+          path: rel,
+          title: firstLine.replace(/^#+\s*/, '').slice(0, 120) || rel,
+          snippet,
+          score
+        });
+      }
+      if (files.length >= limit) capped = true;
+    }
+  }
+
+  if (fs.existsSync(root)) walk(root, 0);
+  files.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  const value = { files, capped };
+  brainCache.set(cacheKey, { createdAt: Date.now(), value });
+  return value;
+}
+
+function isLmStudio(base) {
+  return base.includes('1234') || base.endsWith('/v1') || base.includes('/v1/');
+}
+
+function lmBase(base) {
+  return base.replace(/\/v1\/?$/, '');
+}
+
+async function listModels(config) {
+  if (isLmStudio(config.ollamaBase)) {
+    const url = `${lmBase(config.ollamaBase)}/v1/models`;
+    const response = await axios.get(url, { timeout: 3500 });
+    return (response.data && response.data.data || []).map((model) => model.id).filter(Boolean);
+  }
+  const response = await axios.get(`${config.ollamaBase}/api/tags`, { timeout: 3500 });
+  return (response.data && response.data.models || []).map((model) => model.name).filter(Boolean);
+}
+
+function isEmbeddingModel(model) {
+  return /embed|embedding/i.test(String(model || ''));
+}
+
+function firstChatModel(models, preferred) {
+  if (preferred && !isEmbeddingModel(preferred)) return preferred;
+  return (models || []).find((model) => !isEmbeddingModel(model)) || '';
+}
+
+function buildMessages({ message, agent, brainFiles }) {
+  const selected = AGENTS.find((item) => item.id === agent) || AGENTS[0];
+  const brainContext = brainFiles.length
+    ? brainFiles.map((file) => `- ${file.path}: ${String(file.title || '').slice(0, 120)}`).join('\n')
+    : '(관련 로컬 지식 파일 없음)';
+
+  return [{
+    role: 'user',
+    content:
+      `역할: Connect AI의 ${selected.name} (${selected.role}).\n` +
+      `답변: 한국어, 결론 먼저, 짧고 실행 가능하게.\n` +
+      `참고자료:\n${brainContext}\n\n` +
+      `요청: ${String(message || '')}`
+  }];
+}
+
+function extractModelText(data) {
+  const choice = data && data.choices && data.choices[0];
+  const message = choice && choice.message;
+  if (message) {
+    if (typeof message.content === 'string') return message.content;
+    if (Array.isArray(message.content)) {
+      return message.content.map((part) => part.text || part.content || '').join('').trim();
+    }
+    if (typeof message.reasoning_content === 'string') return message.reasoning_content;
+  }
+  if (typeof data.output_text === 'string') return data.output_text;
+  if (typeof data.response === 'string') return data.response;
+  if (data.message && typeof data.message.content === 'string') return data.message.content;
+  return '';
+}
+
+function modelErrorMessage(error) {
+  const status = error && error.response && error.response.status;
+  const data = error && error.response && error.response.data;
+  let detail = '';
+  if (data && typeof data === 'object') {
+    detail = data.error && typeof data.error === 'object' ? data.error.message : data.error;
+    if (!detail) detail = data.message || JSON.stringify(data).slice(0, 500);
+  } else if (typeof data === 'string') {
+    detail = data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  }
+  if (!detail) detail = error && error.message ? error.message : String(error);
+  if (error && error.code === 'ECONNABORTED') {
+    return `모델 응답 시간이 초과되었습니다. (${detail})`;
+  }
+  return status ? `LLM ${status}: ${detail}` : detail;
+}
+
+async function callModel(config, payload) {
+  const model = payload.model || config.defaultModel;
+  if (!model) throw new Error('MODEL_REQUIRED');
+  const requestedTimeout = Number(payload.chatTimeoutMs || payload.timeoutMs);
+  const requestTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? Math.max(1000, Math.min(requestedTimeout, config.timeoutMs))
+    : (config.chatTimeoutMs || config.timeoutMs);
+  const shouldUseBrain = payload.useBrain === true || payload.useBrain === 'true';
+  const terms = shouldUseBrain ? termsFromMessage(payload.message) : [];
+  const brain = shouldUseBrain
+    ? walkBrain(config.localBrainPath, { limit: 3, snippets: false, terms })
+    : { files: [] };
+  const maxTokens = Math.min(Number(payload.maxTokens) || 700, 1400);
+  const directMessages = [{ role: 'user', content: String(payload.message || '') }];
+  const messages = directMessages;
+
+  async function completeOnce(nextMessages) {
+    if (isLmStudio(config.ollamaBase)) {
+      const response = await axios.post(`${lmBase(config.ollamaBase)}/v1/chat/completions`, {
+        model,
+        messages: nextMessages,
+        temperature: 0.4,
+        max_tokens: maxTokens,
+        stream: false
+      }, { timeout: requestTimeout });
+      return extractModelText(response.data).trim();
+    }
+
+    const response = await axios.post(`${config.ollamaBase}/api/chat`, {
+      model,
+      messages: nextMessages,
+      options: { num_predict: maxTokens },
+      stream: false
+    }, { timeout: requestTimeout });
+    return extractModelText(response.data).trim();
+  }
+
+  let text = '';
+  try {
+    text = await completeOnce(messages);
+  } catch (error) {
+    if (!shouldUseBrain) throw error;
+  }
+  if (!text && shouldUseBrain) {
+    text = await completeOnce(directMessages);
+  }
+  return {
+    text,
+    sources: brain.files.slice(0, 3).map((file) => file.path)
+  };
+}
+
+async function testLlmConnection(config, payload = {}) {
+  const effective = {
+    ...config,
+    ollamaBase: String(payload.ollamaBase || config.ollamaBase).replace(/\/+$/, ''),
+    defaultModel: String(payload.model || payload.defaultModel || config.defaultModel || ''),
+    chatTimeoutMs: Math.max(1000, Math.min(Number(payload.chatTimeoutMs || 12000), config.timeoutMs))
+  };
+  const startedAt = Date.now();
+  const result = {
+    ok: true,
+    connected: false,
+    provider: isLmStudio(effective.ollamaBase) ? 'LM Studio' : 'Ollama',
+    base: effective.ollamaBase,
+    model: '',
+    models: [],
+    latencyMs: 0,
+    stages: [],
+    error: '',
+    text: ''
+  };
+
+  try {
+    const listStarted = Date.now();
+    result.models = await listModels(effective);
+    result.stages.push({ name: 'models', ok: true, latencyMs: Date.now() - listStarted, count: result.models.length });
+  } catch (error) {
+    result.error = modelErrorMessage(error);
+    result.latencyMs = Date.now() - startedAt;
+    result.stages.push({ name: 'models', ok: false, error: result.error });
+    return result;
+  }
+
+  const selectedModel = firstChatModel(result.models, effective.defaultModel);
+  result.model = selectedModel;
+  if (!selectedModel) {
+    result.error = '채팅 가능한 모델이 없습니다. LM Studio에서 chat 모델을 로드해 주세요.';
+    result.latencyMs = Date.now() - startedAt;
+    result.stages.push({ name: 'chat', ok: false, error: result.error });
+    return result;
+  }
+  if (!result.models.includes(selectedModel)) {
+    result.stages.push({ name: 'model-match', ok: false, error: `"${selectedModel}" 모델이 목록에 없습니다.` });
+  }
+  if (isEmbeddingModel(selectedModel)) {
+    result.error = `"${selectedModel}"은 embedding 모델이라 채팅 테스트에 사용할 수 없습니다.`;
+    result.latencyMs = Date.now() - startedAt;
+    result.stages.push({ name: 'chat', ok: false, error: result.error });
+    return result;
+  }
+
+  try {
+    const chatStarted = Date.now();
+    const response = await callModel(effective, {
+      model: selectedModel,
+      message: '한국어로 안녕이라고만 답해',
+      useBrain: false,
+      maxTokens: 64,
+      chatTimeoutMs: effective.chatTimeoutMs
+    });
+    result.text = response.text;
+    result.connected = Boolean(response.text);
+    result.error = result.connected ? '' : '모델이 빈 응답을 반환했습니다.';
+    result.stages.push({ name: 'chat', ok: result.connected, latencyMs: Date.now() - chatStarted, error: result.error });
+  } catch (error) {
+    result.error = modelErrorMessage(error);
+    result.stages.push({ name: 'chat', ok: false, error: result.error });
+  }
+
+  result.latencyMs = Date.now() - startedAt;
+  return result;
+}
+
+function getAgent(state, id) {
+  const base = AGENTS.find((agent) => agent.id === id) || AGENTS[0];
+  const active = state.agentState[id] || {};
+  return {
+    ...base,
+    active: active.active !== false,
+    goal: active.goal || '',
+    lastUpdatedAt: active.updatedAt || ''
+  };
+}
+
+function taskProgress(task) {
+  const status = task.status || 'open';
+  const created = new Date(task.createdAt || task.updatedAt || Date.now()).getTime();
+  const updated = new Date(task.updatedAt || task.createdAt || Date.now()).getTime();
+  const ageMinutes = Number.isFinite(created) ? Math.max(0, (Date.now() - created) / 60000) : 0;
+  const priorityBoost = { urgent: 18, high: 10, normal: 4, low: 0 }[task.priority] || 0;
+  const seed = String(task.id || task.title || '').split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) % 9;
+  let percent = Math.min(92, Math.round(14 + priorityBoost + seed + ageMinutes * 2.4));
+  if (status === 'done') percent = 100;
+  if (status === 'cancelled') percent = 0;
+
+  const phase = percent >= 100 ? 'done'
+    : percent >= 74 ? 'review'
+      : percent >= 38 ? 'working'
+        : percent >= 16 ? 'assigned'
+          : 'queued';
+  const labels = {
+    queued: '대기',
+    assigned: '배정됨',
+    working: '진행 중',
+    review: '검토 중',
+    done: '완료',
+    cancelled: '취소'
+  };
+  const activePhase = status === 'cancelled' ? 'cancelled' : phase;
+  const timeline = [
+    { key: 'queued', label: '요청 접수', done: percent >= 1 || status !== 'open', current: activePhase === 'queued' },
+    { key: 'assigned', label: '에이전트 배정', done: percent >= 16 || status === 'done', current: activePhase === 'assigned' },
+    { key: 'working', label: '자료 확인 및 작업', done: percent >= 38 || status === 'done', current: activePhase === 'working' },
+    { key: 'review', label: '결과 정리', done: percent >= 74 || status === 'done', current: activePhase === 'review' },
+    { key: 'done', label: status === 'cancelled' ? '취소됨' : '완료', done: status === 'done' || status === 'cancelled', current: activePhase === 'done' || activePhase === 'cancelled' }
+  ];
+  return {
+    percent,
+    phase: activePhase,
+    label: labels[activePhase] || labels.working,
+    updatedAt: task.updatedAt || task.createdAt || '',
+    startedAt: task.createdAt || '',
+    timeline,
+    activity: status === 'done'
+      ? '결과가 완료 처리되었습니다.'
+      : status === 'cancelled'
+        ? '작업이 취소되었습니다.'
+        : `${labels[activePhase] || '진행 중'} · 에이전트가 요청을 처리하고 있습니다.`,
+    mode: 'local-progress'
+  };
+}
+
+function enrichTask(task) {
+  return {
+    ...task,
+    progress: taskProgress(task)
+  };
+}
+
+function listTasks(state, config) {
+  const external = externalTrackerTasks(config);
+  const known = new Set(state.tasks.map((task) => task.id));
+  return [
+    ...state.tasks.map((task) => ({ ...task, source: task.source || 'web' })),
+    ...external.filter((task) => !known.has(task.id))
+  ].map(enrichTask).sort((a, b) => {
+    const order = { urgent: 0, high: 1, normal: 2, low: 3 };
+    const pa = order[a.priority] ?? 2;
+    const pb = order[b.priority] ?? 2;
+    if (pa !== pb) return pa - pb;
+    return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+  });
+}
+
+function listApprovals(state, config) {
+  const external = externalApprovals(config);
+  const known = new Set(state.approvals.map((approval) => approval.id));
+  return [
+    ...state.approvals.map((approval) => ({ ...approval, source: approval.source || 'web' })),
+    ...external.filter((approval) => !known.has(approval.id))
+  ].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+}
+
+function buildDashboard(config) {
+  const state = loadState();
+  const brain = walkBrain(config.localBrainPath, { limit: 500 });
+  const tasks = listTasks(state, config);
+  const approvals = listApprovals(state, config);
+  const openTasks = tasks.filter((task) => task.status !== 'done' && task.status !== 'cancelled');
+  const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
+  const companyState = readCompanyState(config);
+  const activeAgents = readActiveAgents(config);
+  const agents = AGENTS.map((agent) => {
+    const local = getAgent(state, agent.id);
+    const activeFlag = activeAgents[agent.id];
+    const active = typeof activeFlag === 'boolean' ? activeFlag : local.active;
+    return {
+      ...local,
+      active,
+      openTasks: openTasks.filter((task) => task.agent === agent.id || (Array.isArray(task.agentIds) && task.agentIds.includes(agent.id))).length
+    };
+  });
+  return {
+    ok: true,
+    mode: 'standalone-web',
+    version: require(path.join(ROOT, 'package.json')).version,
+    company: companyState.name || companyState.companyName || 'Connect AI Company',
+    config,
+    brain: { fileCount: brain.files.length, capped: brain.capped, path: config.localBrainPath },
+    agents,
+    tasks: {
+      open: openTasks.length,
+      urgent: openTasks.filter((task) => task.priority === 'urgent').length,
+      top: openTasks.slice(0, 8),
+      all: tasks
+    },
+    approvals: {
+      pending: pendingApprovals.length,
+      all: approvals
+    },
+    sessions: state.sessions.slice(0, 10).map((session) => ({
+      id: session.id,
+      title: session.title,
+      agent: session.agent,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messageCount: Array.isArray(session.messages) ? session.messages.length : 0
+    })),
+    events: state.events.slice(0, 14)
+  };
+}
+
+function routeParam(pathname, prefix) {
+  if (!pathname.startsWith(prefix)) return '';
+  return decodeURIComponent(pathname.slice(prefix.length).replace(/^\/+/, ''));
+}
+
+async function handleTasks(req, res, pathname, config) {
+  const state = loadState();
+  if (req.method === 'GET' && pathname === '/api/tasks') {
+    sendJson(res, 200, { ok: true, tasks: listTasks(state, config) });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/tasks') {
+    const body = await readJsonBody(req);
+    const title = cleanText(body.title, 500);
+    if (!title) {
+      sendJson(res, 400, { ok: false, error: 'TITLE_REQUIRED' });
+      return true;
+    }
+    const agent = AGENTS.some((item) => item.id === body.agent) ? body.agent : 'ceo';
+    const task = {
+      id: newId('task'),
+      title,
+      description: cleanText(body.description, 1000),
+      agent,
+      agentIds: [agent],
+      priority: ['urgent', 'high', 'normal', 'low'].includes(body.priority) ? body.priority : 'normal',
+      status: 'open',
+      dueAt: cleanText(body.dueAt, 80),
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      source: 'web'
+    };
+    state.tasks.unshift(task);
+    pushEvent(state, 'task.created', `${getAgent(state, agent).name}에게 작업 등록: ${title}`, { agent });
+    saveState(state);
+    sendJson(res, 201, { ok: true, task: enrichTask(task) });
+    return true;
+  }
+
+  const id = routeParam(pathname, '/api/tasks/');
+  if (id && req.method === 'GET') {
+    const task = listTasks(state, config).find((item) => item.id === id);
+    sendJson(res, task ? 200 : 404, task ? { ok: true, task } : { ok: false, error: 'TASK_NOT_FOUND' });
+    return true;
+  }
+
+  if (id && req.method === 'PATCH') {
+    const body = await readJsonBody(req);
+    const task = state.tasks.find((item) => item.id === id);
+    if (!task) {
+      sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+      return true;
+    }
+    if (body.status && ['open', 'done', 'cancelled'].includes(body.status)) task.status = body.status;
+    if (body.priority && ['urgent', 'high', 'normal', 'low'].includes(body.priority)) task.priority = body.priority;
+    if (body.title !== undefined) task.title = cleanText(body.title, 500) || task.title;
+    if (body.agent && AGENTS.some((item) => item.id === body.agent)) {
+      task.agent = body.agent;
+      task.agentIds = [body.agent];
+    }
+    task.updatedAt = nowIso();
+    pushEvent(state, 'task.updated', `작업 업데이트: ${task.title}`, { agent: task.agent });
+    saveState(state);
+    sendJson(res, 200, { ok: true, task: enrichTask(task) });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleApprovals(req, res, pathname, config) {
+  const state = loadState();
+  if (req.method === 'GET' && pathname === '/api/approvals') {
+    sendJson(res, 200, { ok: true, approvals: listApprovals(state, config) });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/approvals') {
+    const body = await readJsonBody(req);
+    const title = cleanText(body.title, 500);
+    if (!title) {
+      sendJson(res, 400, { ok: false, error: 'TITLE_REQUIRED' });
+      return true;
+    }
+    const agent = AGENTS.some((item) => item.id === body.agent) ? body.agent : 'ceo';
+    const approval = {
+      id: newId('apr'),
+      title,
+      summary: cleanText(body.summary, 1200),
+      kind: cleanText(body.kind, 80) || 'general',
+      agent,
+      status: 'pending',
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      source: 'web'
+    };
+    state.approvals.unshift(approval);
+    pushEvent(state, 'approval.created', `승인 대기 등록: ${title}`, { agent });
+    saveState(state);
+    sendJson(res, 201, { ok: true, approval });
+    return true;
+  }
+
+  const id = routeParam(pathname, '/api/approvals/');
+  if (id && req.method === 'PATCH') {
+    const body = await readJsonBody(req);
+    const nextStatus = ['approved', 'rejected', 'pending'].includes(body.status) ? body.status : '';
+    if (!nextStatus) {
+      sendJson(res, 400, { ok: false, error: 'STATUS_REQUIRED' });
+      return true;
+    }
+    const approval = state.approvals.find((item) => item.id === id);
+    if (approval) {
+      approval.status = nextStatus;
+      approval.updatedAt = nowIso();
+      approval.resolvedAt = nextStatus === 'pending' ? '' : nowIso();
+      pushEvent(state, `approval.${nextStatus}`, `승인 상태 변경: ${approval.title}`, { agent: approval.agent });
+      saveState(state);
+      sendJson(res, 200, { ok: true, approval });
+      return true;
+    }
+    if (moveExternalApproval(config, id, nextStatus)) {
+      pushEvent(state, `approval.${nextStatus}`, `회사 승인 파일 처리: ${id}`);
+      saveState(state);
+      sendJson(res, 200, { ok: true, approval: { id, status: nextStatus, source: 'company' } });
+      return true;
+    }
+    sendJson(res, 404, { ok: false, error: 'APPROVAL_NOT_FOUND' });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleSessions(req, res, pathname) {
+  const state = loadState();
+  if (req.method === 'GET' && pathname === '/api/sessions') {
+    sendJson(res, 200, { ok: true, sessions: state.sessions });
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/sessions') {
+    const body = await readJsonBody(req);
+    const agent = AGENTS.some((item) => item.id === body.agent) ? body.agent : 'ceo';
+    const session = {
+      id: newId('ses'),
+      title: cleanText(body.title, 100) || '새 대화',
+      agent,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      messages: []
+    };
+    state.sessions.unshift(session);
+    pushEvent(state, 'session.created', `새 대화 시작: ${session.title}`, { agent });
+    saveState(state);
+    sendJson(res, 201, { ok: true, session });
+    return true;
+  }
+
+  const id = routeParam(pathname, '/api/sessions/');
+  if (id && req.method === 'GET') {
+    const session = state.sessions.find((item) => item.id === id);
+    sendJson(res, session ? 200 : 404, session ? { ok: true, session } : { ok: false, error: 'SESSION_NOT_FOUND' });
+    return true;
+  }
+
+  if (id && req.method === 'DELETE') {
+    const before = state.sessions.length;
+    state.sessions = state.sessions.filter((item) => item.id !== id);
+    if (state.sessions.length === before) {
+      sendJson(res, 404, { ok: false, error: 'SESSION_NOT_FOUND' });
+      return true;
+    }
+    pushEvent(state, 'session.deleted', `대화 삭제: ${id}`);
+    saveState(state);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleAgents(req, res, pathname) {
+  const state = loadState();
+  const id = routeParam(pathname, '/api/agents/');
+  if (!id || !AGENTS.some((item) => item.id === id)) return false;
+
+  if (req.method === 'PATCH') {
+    const body = await readJsonBody(req);
+    const current = state.agentState[id] || {};
+    state.agentState[id] = {
+      ...current,
+      active: body.active === undefined ? current.active : body.active !== false,
+      goal: body.goal === undefined ? current.goal || '' : cleanText(body.goal, 500),
+      updatedAt: nowIso()
+    };
+    pushEvent(state, 'agent.updated', `${getAgent(state, id).name} 상태 업데이트`, { agent: id });
+    saveState(state);
+    sendJson(res, 200, { ok: true, agent: getAgent(state, id) });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleApi(req, res, pathname, url) {
+  const config = getConfig();
+
+  if (await handleTasks(req, res, pathname, config)) return;
+  if (await handleApprovals(req, res, pathname, config)) return;
+  if (await handleSessions(req, res, pathname)) return;
+  if (await handleAgents(req, res, pathname)) return;
+
+  if (req.method === 'GET' && pathname === '/api/status') {
+    const dashboard = buildDashboard(config);
+    sendJson(res, 200, {
+      ok: true,
+      mode: dashboard.mode,
+      version: dashboard.version,
+      config,
+      brain: dashboard.brain,
+      agents: dashboard.agents
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/dashboard') {
+    sendJson(res, 200, buildDashboard(config));
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/models') {
+    try {
+      sendJson(res, 200, { ok: true, models: await listModels(config), defaultModel: config.defaultModel });
+    } catch (error) {
+      sendJson(res, 502, { ok: false, error: error.message || String(error), models: [], defaultModel: config.defaultModel });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/llm/test') {
+    const state = loadState();
+    try {
+      const body = await readJsonBody(req);
+      const result = await testLlmConnection(config, body);
+      pushEvent(
+        state,
+        result.connected ? 'llm.test.ok' : 'llm.test.failed',
+        result.connected ? `LLM 연결 성공: ${result.model}` : `LLM 연결 실패: ${result.error || result.model}`,
+        { agent: 'ceo' }
+      );
+      saveState(state);
+      sendJson(res, 200, result);
+    } catch (error) {
+      const message = modelErrorMessage(error);
+      pushEvent(state, 'llm.test.failed', message, { agent: 'ceo' });
+      saveState(state);
+      sendJson(res, 200, { ok: true, connected: false, error: message, stages: [] });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/brain') {
+    const brain = walkBrain(config.localBrainPath, { limit: 80 });
+    sendJson(res, 200, { ok: true, files: brain.files, capped: brain.capped, path: config.localBrainPath });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/brain/search') {
+    const query = cleanText(url.searchParams.get('q') || '', 200);
+    const terms = termsFromMessage(query);
+    const brain = walkBrain(config.localBrainPath, { limit: 50, snippets: true, snippetChars: 800, terms });
+    sendJson(res, 200, { ok: true, query, files: brain.files, capped: brain.capped, path: config.localBrainPath });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/brain/file') {
+    const requested = url.searchParams.get('path') || '';
+    const file = safeJoin(config.localBrainPath, requested);
+    if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      sendJson(res, 404, { ok: false, error: 'FILE_NOT_FOUND' });
+      return;
+    }
+    const text = fs.readFileSync(file, 'utf8').slice(0, 16000);
+    sendJson(res, 200, { ok: true, path: path.relative(config.localBrainPath, file), text });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/config') {
+    sendJson(res, 200, { ok: true, config });
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/config') {
+    try {
+      const body = await readJsonBody(req);
+      const next = {
+        ollamaBase: body.ollamaBase || config.ollamaBase,
+        defaultModel: body.defaultModel || config.defaultModel,
+        localBrainPath: expandHome(body.localBrainPath || config.localBrainPath),
+        timeoutMs: Number(body.timeoutMs || config.timeoutMs),
+        chatTimeoutMs: Number(body.chatTimeoutMs || config.chatTimeoutMs)
+      };
+      writeJson(LOCAL_CONFIG, next);
+      brainCache.clear();
+      sendJson(res, 200, { ok: true, config: getConfig() });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message || String(error) });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/chat') {
+    const state = loadState();
+    let session = null;
+    let agent = 'ceo';
+    try {
+      const body = await readJsonBody(req);
+      const message = cleanText(body.message, 8000);
+      if (!message) {
+        sendJson(res, 400, { ok: false, error: 'MESSAGE_REQUIRED' });
+        return;
+      }
+      agent = AGENTS.some((item) => item.id === body.agent) ? body.agent : 'ceo';
+      session = body.sessionId ? state.sessions.find((item) => item.id === body.sessionId) : null;
+      if (!session) {
+        session = {
+          id: newId('ses'),
+          title: message.slice(0, 40) || '새 대화',
+          agent,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+          messages: []
+        };
+        state.sessions.unshift(session);
+      }
+      session.agent = agent;
+      session.messages.push({ id: newId('msg'), role: 'user', agent, content: message, createdAt: nowIso() });
+
+      const result = await callModel(config, { ...body, message, agent });
+      const text = result.text || '모델이 빈 응답을 반환했습니다. 모델 설정이나 컨텍스트 길이를 확인해 주세요.';
+      session.messages.push({ id: newId('msg'), role: 'assistant', agent, content: text, sources: result.sources, createdAt: nowIso() });
+      session.updatedAt = nowIso();
+      pushEvent(state, 'chat.completed', `${getAgent(state, agent).name} 응답 완료`, { agent });
+      saveState(state);
+      sendJson(res, 200, { ok: true, sessionId: session.id, text, sources: result.sources });
+    } catch (error) {
+      const errorText = modelErrorMessage(error);
+      if (session) {
+        session.messages.push({ id: newId('msg'), role: 'assistant', agent, content: errorText, error: true, createdAt: nowIso() });
+        session.updatedAt = nowIso();
+      }
+      pushEvent(state, 'chat.failed', errorText.slice(0, 220), { agent });
+      saveState(state);
+      const code = error && error.message === 'MODEL_REQUIRED' ? 400 : 502;
+      sendJson(res, code, { ok: false, sessionId: session ? session.id : '', error: errorText });
+    }
+    return;
+  }
+
+  sendJson(res, 404, { ok: false, error: 'NOT_FOUND' });
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+    if (url.pathname.startsWith('/api/')) {
+      await handleApi(req, res, url.pathname, url);
+      return;
+    }
+    if (url.pathname.startsWith('/assets/')) {
+      serveFile(res, safeJoin(ASSETS_DIR, url.pathname.replace(/^\/assets\//, '')));
+      return;
+    }
+    const file = url.pathname === '/'
+      ? path.join(WEB_DIR, 'index.html')
+      : safeJoin(WEB_DIR, url.pathname);
+    serveFile(res, file);
+  } catch (error) {
+    sendJson(res, 500, { ok: false, error: error.message || String(error) });
+  }
+});
+
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`Connect AI web app running at http://127.0.0.1:${PORT}`);
+});
