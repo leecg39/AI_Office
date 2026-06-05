@@ -320,13 +320,13 @@ h2 { font-size: 18px; }
 
 .overview {
   display: grid;
-  grid-template-columns: minmax(280px, 1.3fr) minmax(260px, 0.7fr);
+  grid-template-columns: 1fr;
   gap: 14px;
 }
 
 .office-map {
   position: relative;
-  min-height: 280px;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -407,9 +407,10 @@ h2 { font-size: 18px; }
 }
 
 .office-map img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  min-height: 280px;
   object-fit: cover;
   display: block;
 }
@@ -438,7 +439,7 @@ h2 { font-size: 18px; }
 
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -461,6 +462,23 @@ h2 { font-size: 18px; }
 .kpi strong {
   font-size: clamp(26px, 5vw, 46px);
   line-height: 1;
+}
+
+.sidebar-kpi-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sidebar-kpi-grid .kpi {
+  min-height: 94px;
+  padding: 10px;
+}
+
+.sidebar-kpi-grid .kpi span {
+  font-size: 11px;
+}
+
+.sidebar-kpi-grid .kpi strong {
+  font-size: clamp(26px, 8vw, 34px);
 }
 
 .team-grid {
@@ -941,7 +959,7 @@ h2 { font-size: 18px; }
 .api-dialog {
   position: relative;
   z-index: 1;
-  width: min(520px, calc(100vw - 32px));
+  width: min(620px, calc(100vw - 32px));
   max-height: calc(100vh - 36px);
   overflow: auto;
   padding: 14px;
@@ -970,6 +988,16 @@ h2 { font-size: 18px; }
   gap: 10px;
 }
 
+.api-settings {
+  display: grid;
+  gap: 0;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
 .api-provider {
   display: grid;
   gap: 10px;
@@ -982,6 +1010,11 @@ h2 { font-size: 18px; }
 .api-provider.connected {
   border-color: rgba(34, 229, 142, 0.35);
   background: rgba(34, 229, 142, 0.06);
+}
+
+.api-provider.billing {
+  border-color: rgba(245, 197, 24, 0.48);
+  background: rgba(245, 197, 24, 0.08);
 }
 
 .api-provider strong,
@@ -1009,6 +1042,11 @@ h2 { font-size: 18px; }
   color: var(--green);
 }
 
+.api-status.billing {
+  border-color: rgba(245, 197, 24, 0.55);
+  color: var(--amber);
+}
+
 .api-key-row {
   align-items: stretch;
 }
@@ -1023,7 +1061,7 @@ h2 { font-size: 18px; }
 
 .api-action-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
 }
 
 button.danger-outline {

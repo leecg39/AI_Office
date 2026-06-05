@@ -18,20 +18,37 @@ const MAX_BODY = 2 * 1024 * 1024;
 const BRAIN_CACHE_TTL_MS = 10 * 1000;
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const MOONSHOT_API_BASE = 'https://api.moonshot.ai/v1';
+const CHATGPT_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
+const CHATMOCK_OPENAI_CLIENT_ID = process.env.CONNECT_AI_CHATMOCK_CLIENT_ID
+  || process.env.CHATGPT_LOCAL_CLIENT_ID
+  || 'app_EMoamEEZ73f0CkXaXp7hrann';
+const CHATMOCK_OPENAI_ISSUER = String(process.env.CONNECT_AI_CHATMOCK_ISSUER
+  || process.env.CHATGPT_LOCAL_ISSUER
+  || 'https://auth.openai.com').replace(/\/+$/, '');
+const CHATMOCK_OPENAI_TOKEN_URL = `${CHATMOCK_OPENAI_ISSUER}/oauth/token`;
+const CHATMOCK_CALLBACK_PORT = Number(process.env.CONNECT_AI_CHATMOCK_CALLBACK_PORT || 1455);
+const CHATMOCK_CALLBACK_BASE = String(process.env.CONNECT_AI_CHATMOCK_CALLBACK_BASE
+  || `http://localhost:${CHATMOCK_CALLBACK_PORT}`).replace(/\/+$/, '');
 const PROVIDERS = {
   openai: {
     id: 'openai',
     name: 'OpenAI',
     apiKeyEnv: 'OPENAI_API_KEY',
+    accountUrl: 'https://platform.openai.com/settings/organization/billing',
     keyUrl: 'https://platform.openai.com/settings/organization/api-keys',
-    docsUrl: 'https://developers.openai.com/api/docs/guides/latest-model'
+    billingUrl: 'https://platform.openai.com/settings/organization/billing',
+    docsUrl: 'https://developers.openai.com/api/docs/guides/latest-model',
+    accountAuthMessage: 'OpenAI ChatGPT 구독 로그인은 API 호출 인증으로 직접 사용할 수 없습니다. API Billing/Key 페이지를 열었습니다.'
   },
   moonshot: {
     id: 'moonshot',
     name: 'Kimi',
     apiKeyEnv: 'MOONSHOT_API_KEY',
+    accountUrl: 'https://platform.moonshot.ai/console/billing',
     keyUrl: 'https://platform.moonshot.ai/console/api-keys',
-    docsUrl: 'https://platform.kimi.ai/docs/api/overview'
+    billingUrl: 'https://platform.moonshot.ai/console/billing',
+    docsUrl: 'https://platform.kimi.ai/docs/api/overview',
+    accountAuthMessage: 'Kimi 구독/웹 계정은 API 호출 인증으로 직접 사용할 수 없습니다. API 콘솔에서 키와 결제 상태를 확인해 주세요.'
   }
 };
 const PAID_MODELS = [
@@ -178,6 +195,7 @@ const DEFAULT_STATE = {
 
 const brainCache = new Map();
 const oauthFlows = new Map();
+let chatMockCallbackServer = null;
 
 function expandHome(input) {
   if (!input) return '';
@@ -244,10 +262,30 @@ function providerCredential(provider) {
   }
   const credentials = readLlmCredentials();
   const saved = credentials[provider] || {};
-  if (saved.apiKey) return { token: saved.apiKey, source: 'local', method: 'apiKey' };
-  if (saved.oauth && saved.oauth.accessToken) {
-    return { token: saved.oauth.accessToken, source: 'local', method: 'oauth' };
+  if (provider === 'openai' && saved.authFlow === 'chatmock' && saved.tokens) {
+    const accessToken = saved.tokens.accessToken || saved.tokens.access_token || '';
+    const accountId = saved.tokens.accountId || saved.tokens.account_id || '';
+    if (accessToken && accountId) {
+      return {
+        token: saved.apiKey || accessToken,
+        source: 'local',
+        method: saved.apiKey ? 'apiKey' : 'chatmock',
+        authFlow: 'chatmock',
+        chatMockAccessToken: accessToken,
+        chatMockAccountId: accountId
+      };
+    }
   }
+  if (saved.method === 'oauth' && saved.oauth && saved.oauth.accessToken) {
+    return { token: saved.oauth.accessToken, source: 'local', method: 'oauth', authFlow: saved.authFlow || '' };
+  }
+  if (saved.method === 'apiKey' && saved.apiKey) {
+    return { token: saved.apiKey, source: 'local', method: 'apiKey', authFlow: saved.authFlow || '' };
+  }
+  if (saved.oauth && saved.oauth.accessToken) {
+    return { token: saved.oauth.accessToken, source: 'local', method: 'oauth', authFlow: saved.authFlow || '' };
+  }
+  if (saved.apiKey) return { token: saved.apiKey, source: 'local', method: 'apiKey', authFlow: saved.authFlow || '' };
   return { token: '', source: '', method: '' };
 }
 
@@ -258,11 +296,16 @@ function getProviderSummaries() {
     return {
       id: provider.id,
       name: provider.name,
+      accountUrl: provider.accountUrl,
       keyUrl: provider.keyUrl,
+      billingUrl: provider.billingUrl,
       docsUrl: provider.docsUrl,
+      accountAuthSupported: false,
+      accountAuthMessage: provider.accountAuthMessage,
       apiKeyEnv: provider.apiKeyEnv,
       connected: Boolean(credential.token),
       method: credential.method,
+      authFlow: credential.authFlow || '',
       source: credential.source,
       oauthConfigured: Boolean(oauth.authUrl && oauth.tokenUrl && oauth.clientId)
     };
@@ -358,16 +401,42 @@ function requestBaseUrl(req) {
   return `http://${host}`;
 }
 
+function ensureChatMockCallbackServer() {
+  if (chatMockCallbackServer && chatMockCallbackServer.listening) return true;
+  chatMockCallbackServer = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, `${CHATMOCK_CALLBACK_BASE}`);
+      if (url.pathname === '/auth/callback') {
+        await handleChatMockLocalCallback(res, url);
+        return;
+      }
+      if (url.pathname === '/success') {
+        sendHtml(res, 200, oauthCallbackPage('OpenAI ChatMock 연결 완료', 'Connect AI로 돌아가 연결 상태를 확인하세요. 이 창은 닫아도 됩니다.'));
+        return;
+      }
+      sendHtml(res, 404, oauthCallbackPage('OpenAI ChatMock 인증 실패', '지원하지 않는 콜백 경로입니다.'));
+    } catch (error) {
+      sendHtml(res, 500, oauthCallbackPage('OpenAI ChatMock 인증 실패', error.message || String(error)));
+    }
+  });
+  chatMockCallbackServer.on('error', (error) => {
+    console.warn(`[chatmock] callback server error: ${error.message || error}`);
+  });
+  chatMockCallbackServer.listen(CHATMOCK_CALLBACK_PORT);
+  return true;
+}
+
 function createOAuthFlow(req, providerId) {
   const provider = providerConfig(providerId);
   if (!provider) throw new Error('PROVIDER_NOT_FOUND');
   const oauth = providerOAuthConfig(providerId);
   if (!oauth.authUrl || !oauth.tokenUrl || !oauth.clientId) {
+    if (providerId === 'openai') return createChatMockOpenAiAuthFlow(req, provider);
     return {
       provider: providerId,
       available: false,
-      authUrl: provider.keyUrl,
-      message: `${provider.name} OAuth 설정이 없습니다. API key 페이지를 열었습니다.`
+      authUrl: '',
+      message: `${provider.name} OAuth 클라이언트 설정이 없습니다. Account 또는 API Key로 연결해 주세요.`
     };
   }
 
@@ -400,6 +469,56 @@ function createOAuthFlow(req, providerId) {
   };
 }
 
+function createChatMockOpenAiAuthFlow(req, provider) {
+  ensureChatMockCallbackServer();
+  const flowId = newId('oauth');
+  const codeVerifier = randomBytes(64).toString('hex');
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+  const callbackUrl = `${CHATMOCK_CALLBACK_BASE}/auth/callback`;
+  const authUrl = new URL(`${CHATMOCK_OPENAI_ISSUER}/oauth/authorize`);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', CHATMOCK_OPENAI_CLIENT_ID);
+  authUrl.searchParams.set('redirect_uri', callbackUrl);
+  authUrl.searchParams.set('scope', 'openid profile email offline_access');
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('id_token_add_organizations', 'true');
+  authUrl.searchParams.set('codex_cli_simplified_flow', 'true');
+  authUrl.searchParams.set('state', flowId);
+  oauthFlows.set(flowId, {
+    provider: provider.id,
+    status: 'pending',
+    mode: 'chatmock-openai',
+    clientId: CHATMOCK_OPENAI_CLIENT_ID,
+    tokenEndpoint: CHATMOCK_OPENAI_TOKEN_URL,
+    callbackUrl,
+    codeVerifier,
+    createdAt: Date.now(),
+    error: ''
+  });
+  return {
+    provider: provider.id,
+    available: true,
+    mode: 'chatmock-openai',
+    flowId,
+    authUrl: authUrl.toString(),
+    message: 'ChatMock 방식의 OpenAI 인증 창을 열었습니다. 인증이 끝나면 LLM 연결이 자동 완료됩니다.'
+  };
+}
+
+function createAccountAuthFlow(providerId) {
+  const provider = providerConfig(providerId);
+  if (!provider) throw new Error('PROVIDER_NOT_FOUND');
+  return {
+    provider: providerId,
+    available: false,
+    authUrl: provider.accountUrl || provider.billingUrl || provider.keyUrl,
+    keyUrl: provider.keyUrl,
+    billingUrl: provider.billingUrl,
+    message: provider.accountAuthMessage || `${provider.name} 구독 계정 인증은 API 호출 인증으로 직접 사용할 수 없습니다. API Key 또는 OAuth 연결을 사용해 주세요.`
+  };
+}
+
 function escapeHtmlForPage(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;',
@@ -428,6 +547,128 @@ function oauthCallbackPage(title, body) {
 </html>`;
 }
 
+function parseJwtClaims(token) {
+  if (!token || String(token).split('.').length !== 3) return {};
+  try {
+    const payload = String(token).split('.')[1];
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch {
+    return {};
+  }
+}
+
+async function exchangeChatMockOpenAiCode(flow, code) {
+  const tokenBody = new URLSearchParams();
+  tokenBody.set('grant_type', 'authorization_code');
+  tokenBody.set('code', code);
+  tokenBody.set('redirect_uri', flow.callbackUrl);
+  tokenBody.set('client_id', flow.clientId);
+  tokenBody.set('code_verifier', flow.codeVerifier);
+  const tokenResponse = await axios.post(flow.tokenEndpoint, tokenBody.toString(), {
+    timeout: 30000,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+  });
+
+  const idToken = tokenResponse.data && tokenResponse.data.id_token;
+  const accessToken = tokenResponse.data && tokenResponse.data.access_token;
+  const refreshToken = tokenResponse.data && tokenResponse.data.refresh_token;
+  if (!idToken || !accessToken) throw new Error('ChatMock OpenAI token response is missing expected tokens.');
+
+  const idClaims = parseJwtClaims(idToken);
+  const accessClaims = parseJwtClaims(accessToken);
+  const authClaims = idClaims['https://api.openai.com/auth'] || {};
+  const orgId = idClaims.organization_id || '';
+  const projectId = idClaims.project_id || '';
+  let apiKey = '';
+  let needsPlatformSetup = false;
+  if (orgId && projectId) {
+    const exchangeBody = new URLSearchParams();
+    exchangeBody.set('grant_type', 'urn:ietf:params:oauth:grant-type:token-exchange');
+    exchangeBody.set('client_id', flow.clientId);
+    exchangeBody.set('requested_token', 'openai-api-key');
+    exchangeBody.set('subject_token', idToken);
+    exchangeBody.set('subject_token_type', 'urn:ietf:params:oauth:token-type:id_token');
+    exchangeBody.set('name', `ChatMock [Connect AI] (${new Date().toISOString().slice(0, 10)})`);
+    const exchangeResponse = await axios.post(flow.tokenEndpoint, exchangeBody.toString(), {
+      timeout: 30000,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    apiKey = exchangeResponse.data && exchangeResponse.data.access_token ? exchangeResponse.data.access_token : '';
+  } else {
+    needsPlatformSetup = true;
+  }
+
+  return {
+    apiKey,
+    tokens: {
+      idToken,
+      accessToken,
+      refreshToken: refreshToken || '',
+      accountId: authClaims.chatgpt_account_id || ''
+    },
+    chatmock: {
+      orgId,
+      projectId,
+      needsPlatformSetup,
+      planType: accessClaims.chatgpt_plan_type || accessClaims['https://api.openai.com/auth']?.chatgpt_plan_type || '',
+      issuer: CHATMOCK_OPENAI_ISSUER
+    }
+  };
+}
+
+async function handleChatMockOpenAiCallback(res, flow, code) {
+  try {
+    const auth = await exchangeChatMockOpenAiCode(flow, code);
+    const credentials = readLlmCredentials();
+    credentials.openai = {
+      ...(credentials.openai || {}),
+      apiKey: auth.apiKey,
+      method: auth.apiKey ? 'apiKey' : 'chatmock',
+      authFlow: 'chatmock',
+      chatmock: {
+        ...auth.chatmock,
+        clientId: flow.clientId,
+        savedAt: nowIso()
+      },
+      tokens: auth.tokens,
+      savedAt: nowIso()
+    };
+    writeLlmCredentials(credentials);
+    flow.status = 'connected';
+    flow.error = '';
+    const message = auth.apiKey
+      ? 'Connect AI로 돌아가 연결 상태를 확인하세요. 이 창은 닫아도 됩니다.'
+      : 'OpenAI Platform API Key는 자동 발급되지 않았지만 ChatMock 토큰 인증은 저장되었습니다. Connect AI로 돌아가 연결 상태를 확인하세요.';
+    sendHtml(res, 200, oauthCallbackPage('OpenAI ChatMock 연결 완료', message));
+  } catch (error) {
+    flow.status = 'error';
+    flow.error = 'ChatMock OpenAI 인증은 완료되지 않았습니다. OpenAI 계정 인증 상태를 확인한 뒤 다시 시도해 주세요.';
+    sendHtml(res, 502, oauthCallbackPage('OpenAI ChatMock 인증 실패', flow.error));
+  }
+}
+
+async function handleChatMockLocalCallback(res, url) {
+  const flowId = url.searchParams.get('state') || '';
+  const flow = flowId ? oauthFlows.get(flowId) : null;
+  if (!flow || flow.provider !== 'openai' || flow.mode !== 'chatmock-openai') {
+    sendHtml(res, 404, oauthCallbackPage('OpenAI ChatMock 인증 실패', '인증 세션을 찾을 수 없습니다. API 패널에서 다시 시도해 주세요.'));
+    return;
+  }
+
+  const code = url.searchParams.get('code');
+  const error = url.searchParams.get('error');
+  if (error || !code) {
+    flow.status = 'error';
+    flow.error = error || '인증 코드가 없습니다.';
+    sendHtml(res, 400, oauthCallbackPage('OpenAI ChatMock 인증 실패', flow.error));
+    return;
+  }
+
+  await handleChatMockOpenAiCallback(res, flow, code);
+}
+
 async function handleOAuthCallback(req, res, url) {
   const match = url.pathname.match(/^\/oauth\/([^/]+)\/callback$/);
   const providerId = match ? decodeURIComponent(match[1]) : '';
@@ -450,6 +691,10 @@ async function handleOAuthCallback(req, res, url) {
 
   const oauth = providerOAuthConfig(providerId);
   try {
+    if (flow.mode === 'chatmock-openai') {
+      await handleChatMockOpenAiCallback(res, flow, code);
+      return;
+    }
     const body = new URLSearchParams();
     body.set('grant_type', 'authorization_code');
     body.set('code', code);
@@ -486,7 +731,19 @@ async function handleOAuthCallback(req, res, url) {
   }
 }
 
+function sanitizeSensitiveText(value) {
+  return String(value || '')
+    .replace(/\borg-[A-Za-z0-9_-]{8,}\b/g, 'org-[redacted]')
+    .replace(/<\s*ak-[^>]+>/gi, '<ak-[redacted]>')
+    .replace(/\bak-[A-Za-z0-9_-]{8,}\b/g, 'ak-[redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, 'sk-[redacted]');
+}
+
 function cleanText(value, max = 4000) {
+  return sanitizeSensitiveText(String(value || '').replace(/\0/g, '').trim()).slice(0, max);
+}
+
+function cleanSecret(value, max = 4000) {
   return String(value || '').replace(/\0/g, '').trim().slice(0, max);
 }
 
@@ -852,6 +1109,115 @@ function extractResponsesText(data) {
   return parts.join('').trim();
 }
 
+function streamToText(stream) {
+  if (!stream || typeof stream.on !== 'function') return Promise.resolve(String(stream || ''));
+  return new Promise((resolve, reject) => {
+    let text = '';
+    stream.on('data', (chunk) => { text += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk); });
+    stream.on('end', () => resolve(text));
+    stream.on('error', reject);
+  });
+}
+
+function aggregateSseResponse(stream) {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    let responseObj = null;
+    let errorObj = null;
+    function processLine(line) {
+      if (!line.startsWith('data: ')) return;
+      const data = line.slice(6).trim();
+      if (!data || data === '[DONE]') return;
+      try {
+        const event = JSON.parse(data);
+        if (event && typeof event === 'object') {
+          if (event.response && typeof event.response === 'object') responseObj = event.response;
+          if (event.type === 'response.failed') {
+            errorObj = event.response && event.response.error
+              ? { error: event.response.error }
+              : { error: { message: 'response.failed' } };
+          }
+        }
+      } catch {
+        // Ignore non-JSON SSE lines.
+      }
+    }
+    stream.on('data', (chunk) => {
+      buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      lines.forEach(processLine);
+    });
+    stream.on('end', () => {
+      if (buffer) processLine(buffer);
+      if (errorObj) {
+        const error = new Error(errorObj.error && errorObj.error.message ? errorObj.error.message : 'ChatMock response failed.');
+        error.response = { status: 502, data: errorObj };
+        reject(error);
+        return;
+      }
+      resolve(responseObj || {});
+    });
+    stream.on('error', reject);
+  });
+}
+
+function chatMockInputItems(messages) {
+  return messages.filter((message) => (message.role || 'user') !== 'system').map((message) => ({
+    type: 'message',
+    role: message.role === 'assistant' ? 'assistant' : 'user',
+    content: [{ type: message.role === 'assistant' ? 'output_text' : 'input_text', text: String(message.content || '') }]
+  }));
+}
+
+function chatMockInstructions(messages) {
+  return messages
+    .filter((message) => message.role === 'system')
+    .map((message) => String(message.content || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+async function callChatMockOpenAiModel(credential, model, messages, requestTimeout) {
+  const sessionId = createHash('sha256')
+    .update(JSON.stringify(messages).slice(0, 4000))
+    .digest('hex')
+    .slice(0, 32);
+  const payload = {
+    model,
+    instructions: chatMockInstructions(messages) || undefined,
+    input: chatMockInputItems(messages),
+    tools: [],
+    tool_choice: 'auto',
+    parallel_tool_calls: false,
+    store: false,
+    stream: true,
+    prompt_cache_key: sessionId,
+    reasoning: { effort: 'low', summary: 'auto' }
+  };
+  const response = await axios.post(CHATGPT_RESPONSES_URL, payload, {
+    timeout: requestTimeout,
+    responseType: 'stream',
+    validateStatus: () => true,
+    headers: {
+      Authorization: `Bearer ${credential.chatMockAccessToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'chatgpt-account-id': credential.chatMockAccountId,
+      'OpenAI-Beta': 'responses=experimental',
+      session_id: sessionId
+    }
+  });
+  if (response.status >= 400) {
+    const text = await streamToText(response.data);
+    const error = new Error(text || `ChatMock upstream ${response.status}`);
+    error.response = { status: response.status, data: text };
+    throw error;
+  }
+  const responseObj = await aggregateSseResponse(response.data);
+  return extractResponsesText(responseObj).trim();
+}
+
 function providerName(provider, config) {
   if (provider === 'openai') return 'OpenAI';
   if (provider === 'moonshot') return 'Kimi';
@@ -870,17 +1236,40 @@ function looksLikeReasoningText(text) {
     || /analy[sz]e the request/i.test(head);
 }
 
+function rawModelErrorDetail(error) {
+  const data = error && error.response && error.response.data;
+  if (data && typeof data === 'object') {
+    const detail = data.error && typeof data.error === 'object' ? data.error.message : data.error;
+    return detail || data.message || JSON.stringify(data).slice(0, 500);
+  }
+  if (typeof data === 'string') {
+    return data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  }
+  return error && error.message ? error.message : String(error);
+}
+
+function modelErrorKind(error) {
+  const status = error && error.response && error.response.status;
+  const detail = rawModelErrorDetail(error).toLowerCase();
+  if ((status === 402 || status === 429)
+    && /insufficient|balance|billing|recharge|quota|credit|suspended/.test(detail)) {
+    return 'billing';
+  }
+  if ((status === 401 || status === 403)
+    || /invalid api key|unauthorized|forbidden|permission|auth/.test(detail)) {
+    return 'auth';
+  }
+  if (error && error.code === 'ECONNABORTED') return 'timeout';
+  return '';
+}
+
 function modelErrorMessage(error) {
   const status = error && error.response && error.response.status;
-  const data = error && error.response && error.response.data;
-  let detail = '';
-  if (data && typeof data === 'object') {
-    detail = data.error && typeof data.error === 'object' ? data.error.message : data.error;
-    if (!detail) detail = data.message || JSON.stringify(data).slice(0, 500);
-  } else if (typeof data === 'string') {
-    detail = data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  const detail = rawModelErrorDetail(error);
+  const kind = modelErrorKind(error);
+  if (kind === 'billing') {
+    return '결제/잔액 문제로 LLM 호출이 차단되었습니다. 공급자 콘솔에서 충전 또는 결제 상태를 확인해 주세요.';
   }
-  if (!detail) detail = error && error.message ? error.message : String(error);
   if (error && error.code === 'ECONNABORTED') {
     return `모델 응답 시간이 초과되었습니다. (${detail})`;
   }
@@ -913,6 +1302,9 @@ async function callModel(config, payload) {
         const error = new Error('OpenAI API Key 또는 OAuth 인증이 필요합니다.');
         error.code = 'OPENAI_AUTH_REQUIRED';
         throw error;
+      }
+      if (credential.authFlow === 'chatmock' && credential.chatMockAccessToken && credential.chatMockAccountId) {
+        return callChatMockOpenAiModel(credential, model, nextMessages, requestTimeout);
       }
       const response = await axios.post(`${OPENAI_API_BASE}/responses`, {
         model,
@@ -1038,7 +1430,11 @@ async function testLlmConnection(config, payload = {}) {
     stages: [],
     authRequired: false,
     authUrl: '',
+    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'moonshot'
+      ? (providerConfig(selectedRef.provider).billingUrl || '')
+      : '',
     flowId: '',
+    errorKind: '',
     error: '',
     text: ''
   };
@@ -1083,6 +1479,7 @@ async function testLlmConnection(config, payload = {}) {
       result.error = result.connected ? '' : '모델이 빈 응답을 반환했습니다.';
       result.stages.push({ name: 'chat', ok: result.connected, latencyMs: Date.now() - chatStarted, error: result.error });
     } catch (error) {
+      result.errorKind = modelErrorKind(error);
       result.error = modelErrorMessage(error);
       result.stages.push({ name: 'chat', ok: false, error: result.error });
     }
@@ -1134,6 +1531,7 @@ async function testLlmConnection(config, payload = {}) {
     result.error = result.connected ? '' : '모델이 빈 응답을 반환했습니다.';
     result.stages.push({ name: 'chat', ok: result.connected, latencyMs: Date.now() - chatStarted, error: result.error });
   } catch (error) {
+    result.errorKind = modelErrorKind(error);
     result.error = modelErrorMessage(error);
     result.stages.push({ name: 'chat', ok: false, error: result.error });
   }
@@ -1212,9 +1610,16 @@ function taskProgress(task) {
 }
 
 function enrichTask(task) {
-  return {
+  const safeTask = {
     ...task,
-    progress: taskProgress(task)
+    title: cleanText(task.title, 500),
+    description: cleanText(task.description, 1000),
+    result: cleanText(task.result, 12000),
+    error: cleanText(task.error, 1200)
+  };
+  return {
+    ...safeTask,
+    progress: taskProgress(safeTask)
   };
 }
 
@@ -1287,7 +1692,10 @@ function buildDashboard(config) {
       updatedAt: session.updatedAt,
       messageCount: Array.isArray(session.messages) ? session.messages.length : 0
     })),
-    events: state.events.slice(0, 14)
+    events: state.events.slice(0, 14).map((event) => ({
+      ...event,
+      title: cleanText(event.title, 240)
+    }))
   };
 }
 
@@ -1608,7 +2016,7 @@ async function handleApi(req, res, pathname, url) {
     try {
       const body = await readJsonBody(req);
       const provider = cleanText(body.provider, 40);
-      const apiKey = cleanText(body.apiKey, 3000);
+      const apiKey = cleanSecret(body.apiKey, 3000);
       const meta = providerConfig(provider);
       if (!meta) {
         sendJson(res, 400, { ok: false, error: 'PROVIDER_NOT_FOUND' });
@@ -1652,6 +2060,18 @@ async function handleApi(req, res, pathname, url) {
       const body = await readJsonBody(req);
       const provider = cleanText(body.provider, 40);
       const result = createOAuthFlow(req, provider);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message || String(error) });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/llm/account/start') {
+    try {
+      const body = await readJsonBody(req);
+      const provider = cleanText(body.provider, 40);
+      const result = createAccountAuthFlow(provider);
       sendJson(res, 200, { ok: true, ...result });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message || String(error) });

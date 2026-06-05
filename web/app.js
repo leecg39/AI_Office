@@ -5,6 +5,7 @@ const state = {
   models: [],
   auth: {},
   providers: [],
+  providerIssues: {},
   dashboard: null,
   sessionId: '',
   selectedTaskId: '',
@@ -259,14 +260,18 @@ function renderApiProviders() {
     return;
   }
   list.innerHTML = state.providers.map((provider) => {
+    const issue = state.providerIssues[provider.id] || {};
     const method = provider.source === 'env'
       ? provider.apiKeyEnv
+      : provider.authFlow === 'chatmock'
+        ? 'ChatMock'
       : provider.method === 'oauth'
         ? 'OAuth'
         : provider.method === 'apiKey'
           ? 'API Key'
           : 'Not connected';
-    const statusClass = provider.connected ? 'connected' : '';
+    const statusClass = issue.kind === 'billing' ? 'billing' : provider.connected ? 'connected' : '';
+    const statusText = issue.kind === 'billing' ? 'Billing' : provider.connected ? 'Connected' : 'Offline';
     return `
       <article class="api-provider ${statusClass}">
         <div class="api-provider-head">
@@ -274,15 +279,17 @@ function renderApiProviders() {
             <strong>${escapeHtml(provider.name)}</strong>
             <span>${escapeHtml(method)}</span>
           </div>
-          <span class="api-status ${statusClass}">${provider.connected ? 'Connected' : 'Offline'}</span>
+          <span class="api-status ${statusClass}">${statusText}</span>
         </div>
         <div class="api-key-row">
           <input id="apiKey-${escapeHtml(provider.id)}" type="password" autocomplete="off" placeholder="${escapeHtml(provider.name)} API Key">
           <button type="button" data-api-action="save-key" data-provider="${escapeHtml(provider.id)}">Save</button>
         </div>
         <div class="api-action-row">
+          <button type="button" class="secondary" data-api-action="account" data-provider="${escapeHtml(provider.id)}">Account</button>
           <button type="button" class="secondary" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">OAuth</button>
           <button type="button" class="secondary" data-api-action="test" data-provider="${escapeHtml(provider.id)}">Test</button>
+          <button type="button" class="secondary" data-api-action="billing" data-provider="${escapeHtml(provider.id)}">Billing</button>
           <button type="button" class="secondary danger-outline" data-api-action="disconnect" data-provider="${escapeHtml(provider.id)}">Disconnect</button>
         </div>
       </article>
@@ -599,6 +606,7 @@ async function saveProviderKey(providerId) {
     method: 'POST',
     body: JSON.stringify({ provider: providerId, apiKey })
   });
+  delete state.providerIssues[providerId];
   if (input) input.value = '';
   await loadProviders();
   await refreshModels();
@@ -608,14 +616,15 @@ async function saveProviderKey(providerId) {
 async function disconnectProvider(providerId) {
   setApiPanelResult('pending', '연결 해제 중...');
   await api(`/api/llm/credentials/${encodeURIComponent(providerId)}`, { method: 'DELETE' });
+  delete state.providerIssues[providerId];
   await loadProviders();
   await refreshModels();
   setApiPanelResult('ok', `${providerLabel(providerId)} 로컬 연결 정보를 삭제했습니다.`);
 }
 
-async function pollOAuthStatus(providerId, flowId) {
+async function pollOAuthStatus(providerId, flowId, attempts = 45) {
   if (!flowId) return null;
-  for (let index = 0; index < 45; index += 1) {
+  for (let index = 0; index < attempts; index += 1) {
     await delay(2000);
     const status = await api(`/api/llm/oauth/status?provider=${encodeURIComponent(providerId)}&flowId=${encodeURIComponent(flowId)}`);
     if (status.provider && status.provider.connected) return status.provider;
@@ -632,16 +641,33 @@ async function startProviderOAuth(providerId) {
     method: 'POST',
     body: JSON.stringify({ provider: providerId })
   });
-  if (result.authUrl) window.open(result.authUrl, '_blank');
   if (!result.available) {
-    setApiPanelResult('pending', result.message || 'OAuth 설정이 없어 공급자 콘솔을 열었습니다.');
+    if (result.authUrl) window.open(result.authUrl, '_blank');
+    setApiPanelResult('pending', result.message || 'OAuth 클라이언트 설정이 없습니다.');
     return;
   }
+  if (result.authUrl) window.open(result.authUrl, '_blank');
   setApiPanelResult('pending', result.message || 'OAuth 인증 창을 열었습니다.');
-  await pollOAuthStatus(providerId, result.flowId);
+  const attempts = result.mode === 'openai-api-key-assisted' || result.mode === 'chatmock-openai' ? 180 : 45;
+  await pollOAuthStatus(providerId, result.flowId, attempts);
   await loadProviders();
   await refreshModels();
-  setApiPanelResult('ok', `${providerLabel(providerId)} OAuth 연결 완료`);
+  const doneText = result.mode === 'chatmock-openai'
+    ? 'OpenAI ChatMock 인증 연결 완료'
+    : result.mode === 'openai-api-key-assisted'
+      ? 'OpenAI 인증 연결 완료'
+    : `${providerLabel(providerId)} OAuth 연결 완료`;
+  setApiPanelResult('ok', doneText);
+}
+
+async function startProviderAccountAuth(providerId) {
+  setApiPanelResult('pending', `${providerLabel(providerId)} 계정 인증 확인 중...`);
+  const result = await api('/api/llm/account/start', {
+    method: 'POST',
+    body: JSON.stringify({ provider: providerId })
+  });
+  if (result.authUrl) window.open(result.authUrl, '_blank');
+  setApiPanelResult(result.available ? 'ok' : 'pending', result.message || '공급자 계정 페이지를 열었습니다.');
 }
 
 async function testProvider(providerId) {
@@ -662,10 +688,29 @@ async function testProvider(providerId) {
   });
   const result = await response.json().catch(() => ({}));
   if (result.connected) {
+    delete state.providerIssues[providerId];
+    renderApiProviders();
     setApiPanelResult('ok', `연결 성공 · ${result.provider} · ${result.model} · ${result.latencyMs}ms`);
+  } else if (result.errorKind === 'billing') {
+    state.providerIssues[providerId] = { kind: 'billing', message: result.error };
+    renderApiProviders();
+    setApiPanelResult('error', `결제 확인 필요 · ${result.error} · Billing 버튼으로 결제 페이지를 열어주세요.`);
   } else {
+    state.providerIssues[providerId] = { kind: result.errorKind || 'error', message: result.error || '' };
+    renderApiProviders();
     setApiPanelResult('error', `연결 실패 · ${result.provider || providerLabel(providerId)} · ${result.error || '알 수 없는 오류'}`);
   }
+}
+
+function openProviderBilling(providerId) {
+  const provider = state.providers.find((item) => item.id === providerId);
+  const url = provider && (provider.billingUrl || provider.keyUrl);
+  if (!url) {
+    setApiPanelResult('error', '결제 페이지 주소가 없습니다.');
+    return;
+  }
+  window.open(url, '_blank');
+  setApiPanelResult('pending', `${providerLabel(providerId)} 결제 페이지를 열었습니다.`);
 }
 
 async function testLlmConnection() {
@@ -849,10 +894,14 @@ function bindEvents() {
     button.disabled = true;
     const run = action === 'save-key'
       ? saveProviderKey(provider)
+      : action === 'account'
+        ? startProviderAccountAuth(provider)
       : action === 'oauth'
         ? startProviderOAuth(provider)
         : action === 'test'
           ? testProvider(provider)
+          : action === 'billing'
+            ? Promise.resolve(openProviderBilling(provider))
           : action === 'disconnect'
             ? disconnectProvider(provider)
             : Promise.resolve();

@@ -25,25 +25,13 @@
         </section>
 
         <section class="panel">
-          <div class="panel-title">Settings</div>
-          <label class="field">
-            <span>LLM URL</span>
-            <input id="ollamaBase" autocomplete="off">
-          </label>
-          <label class="field">
-            <span>Model</span>
-            <select id="modelSelect"></select>
-          </label>
-          <label class="field">
-            <span>Brain Folder</span>
-            <input id="brainPath" autocomplete="off">
-          </label>
-          <div class="button-row settings-actions">
-            <button id="saveConfig" type="button">Save</button>
-            <button id="refreshModels" type="button" class="secondary">Refresh</button>
-            <button id="testLlm" type="button" class="secondary">LLM Test</button>
+          <div class="panel-title">Dashboard</div>
+          <div class="kpi-grid sidebar-kpi-grid">
+            <div class="kpi"><span>Open Tasks</span><strong id="kpiOpen">0</strong></div>
+            <div class="kpi"><span>Approvals</span><strong id="kpiApprovals">0</strong></div>
+            <div class="kpi"><span>Brain Files</span><strong id="kpiBrain">0</strong></div>
+            <div class="kpi"><span>Sessions</span><strong id="kpiSessions">0</strong></div>
           </div>
-          <div id="llmTestResult" class="test-result" aria-live="polite"></div>
         </section>
 
         <section class="panel">
@@ -63,18 +51,12 @@
 
         <section class="overview">
           <div class="office-map">
-            <img src="/assets/map.jpeg" alt="Connect AI office map">
+            <img src="/assets/office.png" alt="Connect AI office map">
             <div id="officeAgents" class="office-agents" aria-label="Agent work activity"></div>
             <div class="office-copy">
               <span id="selectedAgentName">CEO</span>
               <strong>Virtual Office</strong>
             </div>
-          </div>
-          <div class="kpi-grid">
-            <div class="kpi"><span>Open Tasks</span><strong id="kpiOpen">0</strong></div>
-            <div class="kpi"><span>Approvals</span><strong id="kpiApprovals">0</strong></div>
-            <div class="kpi"><span>Brain Files</span><strong id="kpiBrain">0</strong></div>
-            <div class="kpi"><span>Sessions</span><strong id="kpiSessions">0</strong></div>
           </div>
         </section>
 
@@ -179,6 +161,27 @@
           </div>
           <button id="apiPanelClose" type="button" class="secondary small">Close</button>
         </div>
+        <section class="api-settings">
+          <div class="panel-title">Settings</div>
+          <label class="field">
+            <span>LLM URL</span>
+            <input id="ollamaBase" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <select id="modelSelect"></select>
+          </label>
+          <label class="field">
+            <span>Brain Folder</span>
+            <input id="brainPath" autocomplete="off">
+          </label>
+          <div class="button-row settings-actions">
+            <button id="saveConfig" type="button">Save</button>
+            <button id="refreshModels" type="button" class="secondary">Refresh</button>
+            <button id="testLlm" type="button" class="secondary">LLM Test</button>
+          </div>
+          <div id="llmTestResult" class="test-result" aria-live="polite"></div>
+        </section>
         <div id="apiProviderList" class="api-provider-list"></div>
         <div id="apiPanelResult" class="test-result" aria-live="polite"></div>
       </section>
