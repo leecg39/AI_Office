@@ -16,6 +16,7 @@ const LOCAL_CONFIG = path.join(WEB_DIR, 'config.local.json');
 const PORT = Number(process.env.CONNECT_AI_WEB_PORT || process.env.PORT || 8788);
 const MAX_BODY = 2 * 1024 * 1024;
 const BRAIN_CACHE_TTL_MS = 10 * 1000;
+const MAX_TASK_RUN_TIMEOUT_MS = 60000;
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const MOONSHOT_API_BASE = 'https://api.moonshot.ai/v1';
 const CHATGPT_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -158,33 +159,33 @@ const AGENTS = [
   },
   {
     id: 'designer',
-    name: 'Designer',
+    name: '옥순',
     role: 'Lead Designer',
     emoji: '🎨',
     accent: '#a78bfa',
     specialty: '브랜드, 썸네일, 디자인 시스템',
     tagline: '시각 자산과 화면 품질을 담당합니다',
-    avatar: resolveAgentImage('designer_avatar.svg')
+    avatar: resolveAgentImage('oksun_designer.webp')
   },
   {
     id: 'writer',
-    name: 'Writer',
+    name: 'Jenny',
     role: 'Copywriter',
     emoji: '✍️',
     accent: '#fbbf24',
     specialty: '카피, 스크립트, 후크 작성',
     tagline: '글과 메시지를 선명하게 만듭니다',
-    avatar: resolveAgentImage('writer_avatar.svg')
+    avatar: resolveAgentImage('jenny_writer.webp')
   },
   {
     id: 'researcher',
-    name: 'Researcher',
+    name: '정후',
     role: 'Trend & Data Researcher',
     emoji: '🔍',
     accent: '#60a5fa',
     specialty: '리서치, 경쟁 분석, 사실 확인',
     tagline: '근거와 자료를 찾아 정리합니다',
-    avatar: resolveAgentImage('researcher_avatar.svg')
+    avatar: resolveAgentImage('junghu_researcher.webp')
   }
 ];
 
@@ -815,7 +816,11 @@ function serveFile(res, file) {
     return;
   }
   const ext = path.extname(file).toLowerCase();
-  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+  const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+  if (['.html', '.css', '.js'].includes(ext)) {
+    headers['Cache-Control'] = 'no-store';
+  }
+  res.writeHead(200, headers);
   fs.createReadStream(file).pipe(res);
 }
 
@@ -1041,6 +1046,16 @@ function firstChatModel(models, preferred) {
   return (models || []).find((model) => !isEmbeddingModel(model)) || '';
 }
 
+function isActiveTaskStatus(status) {
+  return !['done', 'cancelled', 'failed'].includes(status || 'open');
+}
+
+function taskRunTimeoutMs(config) {
+  const configured = Number(config.chatTimeoutMs) || 45000;
+  const globalLimit = Number(config.timeoutMs) || 300000;
+  return Math.max(5000, Math.min(configured, globalLimit, MAX_TASK_RUN_TIMEOUT_MS));
+}
+
 async function listModelOptions(config) {
   const errors = [];
   const localResult = await Promise.resolve(listLocalModels(config)).then(
@@ -1070,7 +1085,11 @@ async function listModelOptions(config) {
 function buildMessages({ message, agent, brainFiles }) {
   const selected = AGENTS.find((item) => item.id === agent) || AGENTS[0];
   const brainContext = brainFiles.length
-    ? brainFiles.map((file) => `- ${file.path}: ${String(file.title || '').slice(0, 120)}`).join('\n')
+    ? brainFiles.map((file) => {
+      const heading = `- ${file.path}: ${String(file.title || '').slice(0, 120)}`;
+      const excerpt = String(file.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+      return excerpt ? `${heading}\n  ${excerpt}` : heading;
+    }).join('\n')
     : '(관련 로컬 지식 파일 없음)';
 
   return [{
@@ -1187,9 +1206,10 @@ async function callChatMockOpenAiModel(credential, model, messages, requestTimeo
     .update(JSON.stringify(messages).slice(0, 4000))
     .digest('hex')
     .slice(0, 32);
+  const instructions = chatMockInstructions(messages) || 'Answer concisely in Korean. Return only the final answer.';
   const payload = {
     model,
-    instructions: chatMockInstructions(messages) || undefined,
+    instructions,
     input: chatMockInputItems(messages),
     tools: [],
     tool_choice: 'auto',
@@ -1291,13 +1311,19 @@ async function callModel(config, payload) {
   const shouldUseBrain = payload.useBrain === true || payload.useBrain === 'true';
   const terms = shouldUseBrain ? termsFromMessage(payload.message) : [];
   const brain = shouldUseBrain
-    ? walkBrain(config.localBrainPath, { limit: 3, snippets: false, terms })
+    ? walkBrain(config.localBrainPath, { limit: 3, snippets: true, snippetChars: 600, terms })
     : { files: [] };
   const maxTokens = Math.min(Number(payload.maxTokens) || 700, 1400);
-  const directMessages = Array.isArray(payload.messages) && payload.messages.length
+  const hasExplicitMessages = Array.isArray(payload.messages) && payload.messages.length > 0;
+  const directMessages = hasExplicitMessages
     ? payload.messages
     : [{ role: 'user', content: String(payload.message || '') }];
-  const messages = directMessages;
+  // When the user opts into brain grounding (single-turn chat only), inject the
+  // matched local knowledge as context. Falls back to directMessages below if
+  // the grounded call returns empty or errors.
+  const messages = (shouldUseBrain && !hasExplicitMessages && brain.files.length)
+    ? buildMessages({ message: payload.message, agent: payload.agent, brainFiles: brain.files })
+    : directMessages;
 
   async function completeOnce(nextMessages) {
     if (selectedModel.provider === 'openai') {
@@ -1397,7 +1423,8 @@ function buildTaskPrompt(task) {
 }
 
 async function runTaskWithModel(config, task) {
-  return callModel(config, {
+  const timeoutMs = taskRunTimeoutMs(config);
+  const primary = await callModel(config, {
     agent: task.agent || 'ceo',
     messages: [
       {
@@ -1410,8 +1437,29 @@ async function runTaskWithModel(config, task) {
     model: config.defaultModel,
     useBrain: false,
     maxTokens: 220,
-    chatTimeoutMs: Math.min(config.timeoutMs || 120000, Math.max(config.chatTimeoutMs || 0, 120000))
+    chatTimeoutMs: timeoutMs
   });
+  if (primary.text && primary.text.trim()) return primary;
+
+  const fallback = await callModel(config, {
+    agent: task.agent || 'ceo',
+    messages: [{
+      role: 'user',
+      content:
+        `${buildTaskPrompt(task)}\n\n` +
+        '위 작업의 최종 답변만 한국어로 작성해 주세요. 추론 과정은 쓰지 마세요. ' +
+        '실시간 웹/소셜 데이터 조회가 필요하지만 사용할 수 없다면, "실시간 조회가 필요합니다"라고 명확히 답하세요.'
+    }],
+    message: task.title || '',
+    model: config.defaultModel,
+    useBrain: false,
+    maxTokens: 220,
+    chatTimeoutMs: timeoutMs
+  });
+  return {
+    ...fallback,
+    sources: fallback.sources && fallback.sources.length ? fallback.sources : primary.sources
+  };
 }
 
 async function testLlmConnection(config, payload = {}) {
@@ -1565,7 +1613,7 @@ function taskProgress(task) {
   if (status === 'running') percent = Math.max(percent, 64);
   if (status === 'done') percent = 100;
   if (status === 'cancelled') percent = 0;
-  if (status === 'failed') percent = Math.max(1, Math.min(percent, 92));
+  if (status === 'failed') percent = 100;
 
   const phase = percent >= 100 ? 'done'
     : percent >= 74 ? 'review'
@@ -1606,7 +1654,7 @@ function taskProgress(task) {
     phase: activePhase,
     label: labels[activePhase] || labels.working,
     updatedAt: task.updatedAt || task.createdAt || '',
-    startedAt: task.createdAt || '',
+    startedAt: task.startedAt || task.createdAt || '',
     timeline,
     activity,
     mode: 'local-progress'
@@ -1651,12 +1699,32 @@ function listApprovals(state, config) {
   ].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 }
 
+function recoverStaleRunningTasks(state, config) {
+  const staleAfterMs = taskRunTimeoutMs(config) + 30000;
+  const now = Date.now();
+  let changed = false;
+  state.tasks.forEach((task) => {
+    if (task.status !== 'running') return;
+    const lastUpdate = new Date(task.updatedAt || task.startedAt || task.createdAt || 0).getTime();
+    if (!Number.isFinite(lastUpdate) || now - lastUpdate < staleAfterMs) return;
+    task.status = 'failed';
+    task.error = '작업 실행이 완료 신호 없이 멈췄습니다. 서버 재시작, 요청 중단, 클라이언트 타임아웃, 또는 모델 타임아웃 이후 상태가 running으로 남아 있었습니다.';
+    task.failedAt = nowIso();
+    task.updatedAt = task.failedAt;
+    task.staleRecoveredAt = task.failedAt;
+    pushEvent(state, 'task.failed', `멈춘 작업 자동 복구: ${task.title}`, { agent: task.agent });
+    changed = true;
+  });
+  return changed;
+}
+
 function buildDashboard(config) {
   const state = loadState();
+  if (recoverStaleRunningTasks(state, config)) saveState(state);
   const brain = walkBrain(config.localBrainPath, { limit: 500 });
   const tasks = listTasks(state, config);
   const approvals = listApprovals(state, config);
-  const openTasks = tasks.filter((task) => task.status !== 'done' && task.status !== 'cancelled');
+  const openTasks = tasks.filter((task) => isActiveTaskStatus(task.status));
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
   const companyState = readCompanyState(config);
   const activeAgents = readActiveAgents(config);
@@ -1757,11 +1825,13 @@ async function handleTasks(req, res, pathname, config) {
     }
 
     task.status = 'running';
-    task.startedAt = task.startedAt || nowIso();
-    task.updatedAt = nowIso();
+    task.startedAt = nowIso();
+    task.updatedAt = task.startedAt;
     delete task.error;
     delete task.result;
     delete task.sources;
+    delete task.failedAt;
+    delete task.staleRecoveredAt;
     pushEvent(state, 'task.running', `작업 실행 시작: ${task.title}`, { agent: task.agent });
     saveState(state);
 
@@ -2262,7 +2332,9 @@ const server = http.createServer(async (req, res) => {
     }
     const file = url.pathname === '/'
       ? path.join(WEB_DIR, 'index.html')
-      : safeJoin(WEB_DIR, url.pathname);
+      : url.pathname === '/completed'
+        ? path.join(WEB_DIR, 'completed.html')
+        : safeJoin(WEB_DIR, url.pathname);
     serveFile(res, file);
   } catch (error) {
     sendJson(res, 500, { ok: false, error: error.message || String(error) });
