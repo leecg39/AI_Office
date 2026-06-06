@@ -5,6 +5,31 @@ const completedState = {
 };
 
 const $ = (id) => document.getElementById(id);
+const APP_CURRENT_URL_KEY = 'connect-ai-current-url';
+const APP_PREVIOUS_URL_KEY = 'connect-ai-previous-url';
+
+function sameOriginHref(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.origin === window.location.origin ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberInternalRoute() {
+  try {
+    const current = window.location.href;
+    const savedCurrent = sameOriginHref(sessionStorage.getItem(APP_CURRENT_URL_KEY) || '');
+    if (savedCurrent && savedCurrent !== current) {
+      sessionStorage.setItem(APP_PREVIOUS_URL_KEY, savedCurrent);
+    }
+    sessionStorage.setItem(APP_CURRENT_URL_KEY, current);
+  } catch {
+    // Session storage can be unavailable in restricted contexts.
+  }
+}
 
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({
@@ -132,6 +157,7 @@ async function loadCompleted() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  rememberInternalRoute();
   $('completedList').addEventListener('click', (event) => {
     const item = event.target.closest('[data-task-id]');
     if (!item) return;

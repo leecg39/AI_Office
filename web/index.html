@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Connect AI Web</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260606-3">
   </head>
   <body>
     <div class="shell">
@@ -163,7 +163,10 @@
             <div class="section-kicker">Result</div>
             <h2>결과물</h2>
           </div>
-          <button id="resultRefresh" type="button" class="secondary small">Refresh</button>
+          <div class="result-panel-actions">
+            <button id="resultRefresh" type="button" class="secondary small">Refresh</button>
+            <a id="resultBack" href="/completed" class="secondary small result-back-link">이전</a>
+          </div>
         </div>
         <div id="resultPanelBody" class="result-panel-body">
           <div class="empty">작업을 선택하면 결과물이 여기에 표시됩니다.</div>
@@ -205,6 +208,6 @@
         <div id="apiPanelResult" class="test-result" aria-live="polite"></div>
       </section>
     </div>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260606-4"></script>
   </body>
 </html>

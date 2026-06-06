@@ -206,7 +206,8 @@ textarea:focus {
 }
 
 button,
-.topbar a {
+.topbar a,
+.result-back-link {
   min-height: 36px;
   border: 0;
   border-radius: 8px;
@@ -222,13 +223,15 @@ button,
 }
 
 button.secondary,
-.topbar a {
+.topbar a,
+.result-back-link {
   background: rgba(53, 200, 255, 0.12);
   color: var(--cyan);
   border: 1px solid rgba(53, 200, 255, 0.35);
 }
 
-button.small { min-height: 32px; }
+button.small,
+.result-back-link.small { min-height: 32px; }
 
 button:disabled {
   cursor: wait;
@@ -353,6 +356,14 @@ button:disabled {
   gap: 12px;
 }
 
+.result-panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .result-head {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
@@ -419,6 +430,63 @@ button:disabled {
 .result-sources {
   display: grid;
   gap: 6px;
+}
+
+.result-path-item {
+  display: grid;
+  gap: 6px;
+}
+
+.result-path-link {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  justify-content: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  text-align: left;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+.result-path-link::-webkit-details-marker {
+  display: none;
+}
+
+.result-path-link strong {
+  color: var(--green);
+}
+
+.result-path-link span {
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+
+.result-path-link:hover,
+.result-path-link:focus-visible {
+  color: var(--cyan);
+  text-decoration: underline;
+}
+
+.result-open-menu {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(3, minmax(78px, auto));
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid rgba(53, 200, 255, 0.25);
+  border-radius: 8px;
+  background: rgba(53, 200, 255, 0.055);
+}
+
+.result-open-menu span {
+  color: var(--muted);
+  font-weight: 800;
 }
 
 .topbar {
@@ -1642,6 +1710,7 @@ button.danger-outline {
   .task-controls,
   .split,
   .result-actions,
+  .result-open-menu,
   .api-action-row {
     grid-template-columns: 1fr;
   }

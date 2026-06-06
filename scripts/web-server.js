@@ -3,6 +3,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFile } = require('child_process');
 const { createHash, randomBytes, randomUUID } = require('crypto');
 const axios = require('axios');
 
@@ -24,6 +25,7 @@ const BRAIN_CACHE_TTL_MS = 10 * 1000;
 const MAX_TASK_RUN_TIMEOUT_MS = 60000;
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const ZAI_API_BASE = process.env.ZAI_API_BASE || 'https://api.z.ai/api/coding/paas/v4';
+const MOONSHOT_API_BASE = process.env.MOONSHOT_API_BASE || 'https://api.moonshot.ai/v1';
 const CHATGPT_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CHATMOCK_OPENAI_CLIENT_ID = process.env.CONNECT_AI_CHATMOCK_CLIENT_ID
   || process.env.CHATGPT_LOCAL_CLIENT_ID
@@ -38,7 +40,7 @@ const CHATMOCK_CALLBACK_BASE = String(process.env.CONNECT_AI_CHATMOCK_CALLBACK_B
 const PROVIDERS = {
   openai: {
     id: 'openai',
-    name: 'OpenAI',
+    name: 'OpenAI GPT-5.6',
     apiKeyEnv: 'OPENAI_API_KEY',
     accountUrl: 'https://chatgpt.com/#settings/Subscription',
     keyUrl: 'https://platform.openai.com/settings/organization/api-keys',
@@ -55,14 +57,24 @@ const PROVIDERS = {
     billingUrl: 'https://z.ai/manage-apikey/billing',
     docsUrl: 'https://docs.z.ai/guides/llm/glm-5.1',
     accountAuthMessage: 'Z.AI Lite / GLM Coding Plan 키는 Coding Plan API 엔드포인트로 연결됩니다. API Key 페이지에서 키 상태를 확인해 주세요.'
+  },
+  moonshot: {
+    id: 'moonshot',
+    name: 'Kimi 2.6',
+    apiKeyEnv: 'MOONSHOT_API_KEY',
+    accountUrl: 'https://platform.kimi.ai/console/api-keys',
+    keyUrl: 'https://platform.kimi.ai/console/api-keys',
+    billingUrl: 'https://platform.kimi.ai/console/billing',
+    docsUrl: 'https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart',
+    accountAuthMessage: 'Kimi 2.6은 Moonshot/Kimi API Key로 연결됩니다. API Key 페이지에서 키 상태를 확인해 주세요.'
   }
 };
 const PAID_MODELS = [
   {
-    id: 'openai:gpt-5.5',
+    id: 'openai:gpt-5.6',
     provider: 'openai',
-    model: 'gpt-5.5',
-    label: 'OpenAI · GPT-5.5',
+    model: 'gpt-5.6',
+    label: 'OpenAI · GPT-5.6',
     paid: true
   },
   {
@@ -72,8 +84,19 @@ const PAID_MODELS = [
     label: 'GLM 5.1 · Z.AI Lite / Coding Plan (glm-5.1)',
     paid: true,
     contextLength: 200000
+  },
+  {
+    id: 'moonshot:kimi-k2.6',
+    provider: 'moonshot',
+    model: 'kimi-k2.6',
+    label: 'Kimi 2.6 · Moonshot API (kimi-k2.6)',
+    paid: true,
+    contextLength: 256000
   }
 ];
+const OPENAI_CHATMOCK_MODEL_FALLBACKS = {
+  'gpt-5.6': ['gpt-5.5']
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -280,11 +303,20 @@ function providerOAuthConfig(provider) {
   };
 }
 
+function providerApiKeyLooksValid(provider, apiKey) {
+  const key = String(apiKey || '').trim();
+  if (!key) return false;
+  if (provider === 'moonshot') return /^sk-[A-Za-z0-9_-]{20,}$/.test(key);
+  return true;
+}
+
 function providerCredential(provider) {
   const config = providerConfig(provider);
   if (!config) return { token: '', source: '', method: '' };
   if (process.env[config.apiKeyEnv]) {
-    return { token: process.env[config.apiKeyEnv], source: 'env', method: 'apiKey' };
+    const token = process.env[config.apiKeyEnv];
+    if (!providerApiKeyLooksValid(provider, token)) return { token: '', source: 'env', method: 'apiKey', invalid: true };
+    return { token, source: 'env', method: 'apiKey' };
   }
   const credentials = readLlmCredentials();
   const saved = credentials[provider] || {};
@@ -306,12 +338,16 @@ function providerCredential(provider) {
     return { token: saved.oauth.accessToken, source: 'local', method: 'oauth', authFlow: saved.authFlow || '' };
   }
   if (saved.method === 'apiKey' && saved.apiKey) {
+    if (!providerApiKeyLooksValid(provider, saved.apiKey)) return { token: '', source: 'local', method: 'apiKey', authFlow: saved.authFlow || '', invalid: true };
     return { token: saved.apiKey, source: 'local', method: 'apiKey', authFlow: saved.authFlow || '' };
   }
   if (saved.oauth && saved.oauth.accessToken) {
     return { token: saved.oauth.accessToken, source: 'local', method: 'oauth', authFlow: saved.authFlow || '' };
   }
-  if (saved.apiKey) return { token: saved.apiKey, source: 'local', method: 'apiKey', authFlow: saved.authFlow || '' };
+  if (saved.apiKey) {
+    if (!providerApiKeyLooksValid(provider, saved.apiKey)) return { token: '', source: 'local', method: 'apiKey', authFlow: saved.authFlow || '', invalid: true };
+    return { token: saved.apiKey, source: 'local', method: 'apiKey', authFlow: saved.authFlow || '' };
+  }
   return { token: '', source: '', method: '' };
 }
 
@@ -957,6 +993,50 @@ function writeTaskExport(task, config, target = 'all') {
   return output;
 }
 
+function pathInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function runOpenCommand(args) {
+  return new Promise((resolve, reject) => {
+    execFile('open', args, { timeout: 10000 }, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function openResultPath(config, rawPath, action) {
+  const requested = expandHome(String(rawPath || '').trim());
+  if (!requested) throw new Error('PATH_REQUIRED');
+  const filePath = path.resolve(requested);
+  const vaultPath = path.resolve(resolveObsidianVaultPath(config.obsidianVaultPath, config.localBrainPath));
+  if (!pathInside(vaultPath, filePath)) throw new Error('PATH_NOT_ALLOWED');
+  if (!fs.existsSync(filePath)) throw new Error('FILE_NOT_FOUND');
+
+  const stat = fs.statSync(filePath);
+  if (action === 'finder') {
+    await runOpenCommand(stat.isDirectory() ? [filePath] : ['-R', filePath]);
+    return { action, path: filePath };
+  }
+  if (action === 'preview') {
+    if (stat.isDirectory()) throw new Error('PREVIEW_REQUIRES_FILE');
+    await runOpenCommand(['-a', 'Preview', filePath]);
+    return { action, path: filePath };
+  }
+  if (action === 'obsidian') {
+    const relative = path.relative(vaultPath, filePath).split(path.sep).join('/');
+    const uri = `obsidian://open?vault=${encodeURIComponent(path.basename(vaultPath))}&file=${encodeURIComponent(relative)}`;
+    await runOpenCommand([uri]);
+    return { action, path: filePath, uri };
+  }
+  throw new Error('OPEN_ACTION_REQUIRED');
+}
+
 function pushEvent(state, type, title, meta = {}) {
   state.events.unshift({
     id: newId('evt'),
@@ -1235,7 +1315,7 @@ function parseModelRef(value) {
   const raw = String(value || '').trim();
   if (raw.startsWith('openai:')) return { provider: 'openai', model: raw.slice('openai:'.length) };
   if (raw.startsWith('zai:')) return { provider: 'zai', model: raw.slice('zai:'.length) };
-  if (raw.startsWith('moonshot:')) return { provider: 'zai', model: 'glm-5.1' };
+  if (raw.startsWith('moonshot:')) return { provider: 'moonshot', model: raw.slice('moonshot:'.length) };
   if (raw.startsWith('local:')) return { provider: 'local', model: raw.slice('local:'.length) };
   return { provider: 'local', model: raw };
 }
@@ -1353,6 +1433,7 @@ function aggregateSseResponse(stream) {
     let buffer = '';
     let responseObj = null;
     let errorObj = null;
+    let outputText = '';
     function processLine(line) {
       if (!line.startsWith('data: ')) return;
       const data = line.slice(6).trim();
@@ -1361,6 +1442,12 @@ function aggregateSseResponse(stream) {
         const event = JSON.parse(data);
         if (event && typeof event === 'object') {
           if (event.response && typeof event.response === 'object') responseObj = event.response;
+          if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+            outputText += event.delta;
+          }
+          if (event.type === 'response.output_text.done' && typeof event.text === 'string') {
+            outputText = event.text;
+          }
           if (event.type === 'response.failed') {
             errorObj = event.response && event.response.error
               ? { error: event.response.error }
@@ -1385,6 +1472,10 @@ function aggregateSseResponse(stream) {
         reject(error);
         return;
       }
+      if (outputText.trim()) {
+        resolve({ output_text: outputText.trim(), ...(responseObj || {}) });
+        return;
+      }
       resolve(responseObj || {});
     });
     stream.on('error', reject);
@@ -1407,7 +1498,12 @@ function chatMockInstructions(messages) {
     .join('\n\n');
 }
 
-async function callChatMockOpenAiModel(credential, model, messages, requestTimeout) {
+function chatMockModelCandidates(model) {
+  const wanted = String(model || '').trim();
+  return [wanted, ...(OPENAI_CHATMOCK_MODEL_FALLBACKS[wanted] || [])].filter(Boolean);
+}
+
+async function callChatMockOpenAiModelOnce(credential, model, messages, requestTimeout) {
   const sessionId = createHash('sha256')
     .update(JSON.stringify(messages).slice(0, 4000))
     .digest('hex')
@@ -1445,18 +1541,37 @@ async function callChatMockOpenAiModel(credential, model, messages, requestTimeo
     throw error;
   }
   const responseObj = await aggregateSseResponse(response.data);
-  return extractResponsesText(responseObj).trim();
+  return {
+    text: extractResponsesText(responseObj).trim(),
+    upstreamModel: model
+  };
+}
+
+async function callChatMockOpenAiModel(credential, model, messages, requestTimeout) {
+  let lastError = null;
+  for (const candidate of chatMockModelCandidates(model)) {
+    try {
+      const result = await callChatMockOpenAiModelOnce(credential, candidate, messages, requestTimeout);
+      return { ...result, requestedModel: model };
+    } catch (error) {
+      lastError = error;
+      if (modelErrorKind(error) !== 'unsupported') throw error;
+    }
+  }
+  throw lastError || new Error('ChatMock OpenAI model call failed.');
 }
 
 function providerName(provider, config) {
-  if (provider === 'openai') return 'OpenAI';
+  if (provider === 'openai') return 'OpenAI GPT-5.6';
   if (provider === 'zai') return 'GLM 5.1';
+  if (provider === 'moonshot') return 'Kimi 2.6';
   return isLmStudio(config.ollamaBase) ? 'LM Studio' : 'Ollama';
 }
 
 function providerBase(provider, config) {
   if (provider === 'openai') return OPENAI_API_BASE;
   if (provider === 'zai') return ZAI_API_BASE;
+  if (provider === 'moonshot') return MOONSHOT_API_BASE;
   return config.ollamaBase;
 }
 
@@ -1481,6 +1596,9 @@ function rawModelErrorDetail(error) {
 function modelErrorKind(error) {
   const status = error && error.response && error.response.status;
   const detail = rawModelErrorDetail(error).toLowerCase();
+  if (/not supported|unsupported model|model.*unsupported/.test(detail)) {
+    return 'unsupported';
+  }
   if ((status === 402 || status === 429)
     && /insufficient|balance|billing|recharge|quota|credit|suspended/.test(detail)) {
     return 'billing';
@@ -1499,6 +1617,9 @@ function modelErrorMessage(error) {
   const kind = modelErrorKind(error);
   if (kind === 'billing') {
     return '결제/잔액 문제로 LLM 호출이 차단되었습니다. 공급자 콘솔에서 충전 또는 결제 상태를 확인해 주세요.';
+  }
+  if (kind === 'unsupported') {
+    return `현재 구독 인증 경로에서 지원되지 않는 모델입니다. (${detail})`;
   }
   if (error && error.code === 'ECONNABORTED') {
     return `모델 응답 시간이 초과되었습니다. (${detail})`;
@@ -1586,6 +1707,29 @@ async function callModel(config, payload) {
       return extractModelText(response.data).trim();
     }
 
+    if (selectedModel.provider === 'moonshot') {
+      const credential = providerCredential('moonshot');
+      if (!credential.token) {
+        const error = new Error('Kimi 2.6 / Moonshot API Key가 필요합니다.');
+        error.code = 'MOONSHOT_AUTH_REQUIRED';
+        throw error;
+      }
+      const response = await axios.post(`${MOONSHOT_API_BASE}/chat/completions`, {
+        model,
+        messages: nextMessages,
+        max_tokens: maxTokens,
+        thinking: { type: 'disabled' },
+        stream: false
+      }, {
+        timeout: requestTimeout,
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      return extractModelText(response.data).trim();
+    }
+
     if (isLmStudio(config.ollamaBase)) {
       const response = await axios.post(`${lmBase(config.ollamaBase)}/v1/chat/completions`, {
         model,
@@ -1607,17 +1751,30 @@ async function callModel(config, payload) {
     return extractModelText(response.data).trim();
   }
 
-  let text = '';
+  function normalizeCompletion(value) {
+    if (value && typeof value === 'object') {
+      return {
+        text: String(value.text || ''),
+        upstreamModel: value.upstreamModel || '',
+        requestedModel: value.requestedModel || ''
+      };
+    }
+    return { text: String(value || ''), upstreamModel: '', requestedModel: '' };
+  }
+
+  let completion = { text: '', upstreamModel: '', requestedModel: '' };
   try {
-    text = await completeOnce(messages);
+    completion = normalizeCompletion(await completeOnce(messages));
   } catch (error) {
     if (!shouldUseBrain) throw error;
   }
-  if (!text && shouldUseBrain) {
-    text = await completeOnce(directMessages);
+  if (!completion.text && shouldUseBrain) {
+    completion = normalizeCompletion(await completeOnce(directMessages));
   }
   return {
-    text,
+    text: completion.text,
+    upstreamModel: completion.upstreamModel,
+    requestedModel: completion.requestedModel,
     sources: brain.files.slice(0, 3).map((file) => file.path)
   };
 }
@@ -1685,12 +1842,13 @@ async function testLlmConnection(config, payload = {}) {
     provider: providerName(selectedRef.provider, effective),
     base: providerBase(selectedRef.provider, effective),
     model: '',
+    upstreamModel: '',
     models: [],
     latencyMs: 0,
     stages: [],
     authRequired: false,
     authUrl: '',
-    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'zai'
+    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'zai' || selectedRef.provider === 'moonshot'
       ? (providerConfig(selectedRef.provider).billingUrl || '')
       : '',
     flowId: '',
@@ -1699,7 +1857,7 @@ async function testLlmConnection(config, payload = {}) {
     text: ''
   };
 
-  if (selectedRef.provider === 'openai' || selectedRef.provider === 'zai') {
+  if (selectedRef.provider === 'openai' || selectedRef.provider === 'zai' || selectedRef.provider === 'moonshot') {
     result.model = selectedRef.model;
     if (!result.model) {
       result.error = `${result.provider} 모델을 선택해 주세요.`;
@@ -1711,12 +1869,15 @@ async function testLlmConnection(config, payload = {}) {
     const credential = providerCredential(selectedRef.provider);
     if (!credential.token) {
       result.authRequired = true;
+      result.errorKind = 'auth';
       result.authUrl = selectedRef.provider === 'openai'
         ? 'https://chatgpt.com/#settings/Subscription'
-        : 'https://z.ai/manage-apikey/apikey-list';
+        : providerConfig(selectedRef.provider).keyUrl || providerConfig(selectedRef.provider).accountUrl || '';
       result.error = selectedRef.provider === 'openai'
         ? 'OpenAI 구독 인증이 필요합니다.'
-        : 'GLM 5.1 / Z.AI API Key가 필요합니다.';
+        : selectedRef.provider === 'zai'
+          ? 'GLM 5.1 / Z.AI API Key가 필요합니다.'
+          : 'Kimi 2.6 / Moonshot API Key가 필요합니다.';
       result.latencyMs = Date.now() - startedAt;
       result.stages.push({ name: 'auth', ok: false, error: result.error });
       return result;
@@ -1735,8 +1896,12 @@ async function testLlmConnection(config, payload = {}) {
         chatTimeoutMs: effective.chatTimeoutMs
       });
       result.text = response.text;
+      result.upstreamModel = response.upstreamModel || '';
       result.connected = Boolean(response.text);
       result.error = result.connected ? '' : '모델이 빈 응답을 반환했습니다.';
+      if (result.upstreamModel && result.upstreamModel !== result.model) {
+        result.stages.push({ name: 'chatmock-model', ok: true, requested: result.model, upstream: result.upstreamModel });
+      }
       result.stages.push({ name: 'chat', ok: result.connected, latencyMs: Date.now() - chatStarted, error: result.error });
     } catch (error) {
       result.errorKind = modelErrorKind(error);
@@ -2348,6 +2513,10 @@ async function handleApi(req, res, pathname, url) {
         sendJson(res, 400, { ok: false, error: 'API_KEY_REQUIRED' });
         return;
       }
+      if (!providerApiKeyLooksValid(provider, apiKey)) {
+        sendJson(res, 400, { ok: false, error: 'API_KEY_INVALID' });
+        return;
+      }
       const credentials = readLlmCredentials();
       credentials[provider] = {
         ...(credentials[provider] || {}),
@@ -2507,6 +2676,17 @@ async function handleApi(req, res, pathname, url) {
       writeJson(LOCAL_CONFIG, next);
       brainCache.clear();
       sendJson(res, 200, { ok: true, config: getConfig() });
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message || String(error) });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/open-path') {
+    try {
+      const body = await readJsonBody(req);
+      const opened = await openResultPath(config, body.path, body.action);
+      sendJson(res, 200, { ok: true, ...opened });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message || String(error) });
     }

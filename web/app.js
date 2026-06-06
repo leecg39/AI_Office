@@ -14,6 +14,49 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const APP_CURRENT_URL_KEY = 'connect-ai-current-url';
+const APP_PREVIOUS_URL_KEY = 'connect-ai-previous-url';
+
+function sameOriginHref(value) {
+  if (!value) return '';
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.origin === window.location.origin ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberInternalRoute() {
+  try {
+    const current = window.location.href;
+    const savedCurrent = sameOriginHref(sessionStorage.getItem(APP_CURRENT_URL_KEY) || '');
+    if (savedCurrent && savedCurrent !== current) {
+      sessionStorage.setItem(APP_PREVIOUS_URL_KEY, savedCurrent);
+    }
+    sessionStorage.setItem(APP_CURRENT_URL_KEY, current);
+  } catch {
+    // Session storage can be disabled in private or restricted contexts.
+  }
+}
+
+function previousInternalRoute() {
+  try {
+    const savedPrevious = sameOriginHref(sessionStorage.getItem(APP_PREVIOUS_URL_KEY) || '');
+    if (savedPrevious && savedPrevious !== window.location.href) return savedPrevious;
+  } catch {
+    // Fall through to referrer and final fallback.
+  }
+  const referrer = sameOriginHref(document.referrer || '');
+  if (referrer && referrer !== window.location.href) return referrer;
+  return `${window.location.origin}/completed`;
+}
+
+function updateResultBackLink() {
+  const link = $('resultBack');
+  if (!link) return;
+  link.href = previousInternalRoute();
+}
 
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({
@@ -57,6 +100,36 @@ function selectedTask() {
     || selected
     || tasks[0]
     || null;
+}
+
+function resultPathItems(exports = {}) {
+  return [
+    exports.pdfPath ? { type: 'PDF', path: exports.pdfPath } : null,
+    exports.markdownPath ? { type: 'Vault', path: exports.markdownPath } : null
+  ].filter(Boolean);
+}
+
+function renderResultPathLinks(exports = {}) {
+  const items = resultPathItems(exports);
+  if (!items.length) return '';
+  return `
+    <div class="result-paths">
+      ${items.map((item) => `
+        <details class="result-path-item">
+          <summary class="result-path-link">
+            <strong>${escapeHtml(item.type)}</strong>
+            <span>${escapeHtml(item.path)}</span>
+          </summary>
+          <div class="result-open-menu">
+            <span>${escapeHtml(item.type)} 열기</span>
+            <button type="button" class="secondary small" data-open-result-path="${escapeHtml(item.path)}" data-open-action="finder">Finder</button>
+            <button type="button" class="secondary small" data-open-result-path="${escapeHtml(item.path)}" data-open-action="preview">미리보기</button>
+            <button type="button" class="secondary small" data-open-result-path="${escapeHtml(item.path)}" data-open-action="obsidian">Obsidian</button>
+          </div>
+        </details>
+      `).join('')}
+    </div>
+  `;
 }
 
 const officePositions = {
@@ -226,14 +299,15 @@ function updateTeamNav() {
 function normalizeModelValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('zai:')) return raw;
-  if (raw.startsWith('moonshot:')) return 'zai:glm-5.1';
+  if (raw === 'openai:gpt-5.5') return 'openai:gpt-5.6';
+  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('zai:') || raw.startsWith('moonshot:')) return raw;
   return `local:${raw}`;
 }
 
 function providerFromModelValue(id) {
   if (id.startsWith('openai:')) return 'openai';
   if (id.startsWith('zai:')) return 'zai';
+  if (id.startsWith('moonshot:')) return 'moonshot';
   return 'local';
 }
 
@@ -242,12 +316,15 @@ function modelNameFromValue(id, provider) {
     ? id.slice('openai:'.length)
     : provider === 'zai'
       ? id.slice('zai:'.length)
+      : provider === 'moonshot'
+        ? id.slice('moonshot:'.length)
       : id.slice('local:'.length);
 }
 
 function providerLabel(provider) {
-  if (provider === 'openai') return 'OpenAI';
+  if (provider === 'openai') return 'OpenAI GPT-5.6';
   if (provider === 'zai') return 'GLM 5.1';
+  if (provider === 'moonshot') return 'Kimi 2.6';
   return 'Local';
 }
 
@@ -294,7 +371,8 @@ function renderModels() {
   const groups = [
     ['local', 'Local LLM'],
     ['openai', 'OpenAI'],
-    ['zai', 'GLM 5.1']
+    ['zai', 'GLM 5.1'],
+    ['moonshot', 'Kimi 2.6']
   ];
   groups.forEach(([provider, label]) => {
     const items = all.filter((model) => model.provider === provider);
@@ -310,7 +388,7 @@ function renderModels() {
     });
     select.appendChild(group);
   });
-  all.filter((model) => !['local', 'openai', 'zai'].includes(model.provider)).forEach((model) => {
+  all.filter((model) => !['local', 'openai', 'zai', 'moonshot'].includes(model.provider)).forEach((model) => {
     const option = document.createElement('option');
     option.value = model.id;
     option.textContent = model.label;
@@ -360,6 +438,7 @@ function renderApiProviders() {
     const statusText = issue.kind === 'billing' ? 'Billing' : provider.connected ? 'Connected' : 'Offline';
     const isSubscriptionProvider = provider.id === 'openai';
     const isZaiProvider = provider.id === 'zai';
+    const isMoonshotProvider = provider.id === 'moonshot';
     const authRow = isSubscriptionProvider
       ? `<div class="subscription-auth-row">
           <span>ChatGPT 구독 계정으로 연결</span>
@@ -371,10 +450,10 @@ function renderApiProviders() {
         </div>`;
     const subscriptionButton = isSubscriptionProvider
       ? ''
-      : isZaiProvider
+      : isZaiProvider || isMoonshotProvider || !provider.oauthConfigured
         ? ''
       : `<button type="button" class="secondary" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">OAuth</button>`;
-    const accountLabel = isSubscriptionProvider ? '구독 계정' : isZaiProvider ? '키 상태' : 'Account';
+    const accountLabel = isSubscriptionProvider ? '구독 계정' : (isZaiProvider || isMoonshotProvider) ? '키 상태' : 'Account';
     const billingLabel = isSubscriptionProvider ? '구독 관리' : isZaiProvider ? 'Plan' : 'Billing';
     return `
       <article class="api-provider ${statusClass}">
@@ -648,14 +727,7 @@ function renderResultPanel() {
   const exportMessage = state.resultExport.message
     ? `<div class="result-export-message ${escapeHtml(state.resultExport.status)}">${escapeHtml(state.resultExport.message)}</div>`
     : '';
-  const savedPaths = exports.markdownPath || exports.pdfPath
-    ? `
-      <div class="result-paths">
-        ${exports.markdownPath ? `<span>Vault: ${escapeHtml(exports.markdownPath)}</span>` : ''}
-        ${exports.pdfPath ? `<span>PDF: ${escapeHtml(exports.pdfPath)}</span>` : ''}
-      </div>
-    `
-    : '';
+  const savedPaths = renderResultPathLinks(exports);
   const sources = Array.isArray(task.sources) && task.sources.length
     ? `<div class="result-sources"><strong>Sources</strong>${task.sources.map((source) => `<span>${escapeHtml(source)}</span>`).join('')}</div>`
     : '';
@@ -676,9 +748,9 @@ function renderResultPanel() {
       <button type="button" class="small" data-result-export="all"${hasResult ? '' : ' disabled'}>둘 다 저장</button>
     </div>
     ${exportMessage}
+    ${savedPaths}
     <div class="result-content ${task.error ? 'error' : ''}">${escapeHtml(content)}</div>
     ${sources}
-    ${savedPaths}
   `;
 }
 
@@ -912,15 +984,21 @@ async function saveProviderKey(providerId) {
     return;
   }
   setApiPanelResult('pending', 'API Key 저장 중...');
-  await api('/api/llm/credentials', {
-    method: 'POST',
-    body: JSON.stringify({ provider: providerId, apiKey })
-  });
-  delete state.providerIssues[providerId];
-  if (input) input.value = '';
-  await loadProviders();
-  await refreshModels();
-  setApiPanelResult('ok', `${providerLabel(providerId)} API Key 저장 완료`);
+  try {
+    await api('/api/llm/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ provider: providerId, apiKey })
+    });
+    delete state.providerIssues[providerId];
+    if (input) input.value = '';
+    await loadProviders();
+    await refreshModels();
+    setApiPanelResult('ok', `${providerLabel(providerId)} API Key 저장 완료`);
+  } catch (error) {
+    setApiPanelResult('error', error.message === 'API_KEY_INVALID'
+      ? `${providerLabel(providerId)} API Key 형식이 올바르지 않습니다.`
+      : error.message);
+  }
 }
 
 async function disconnectProvider(providerId) {
@@ -1001,7 +1079,17 @@ async function testProvider(providerId) {
   if (result.connected) {
     delete state.providerIssues[providerId];
     renderApiProviders();
-    setApiPanelResult('ok', `연결 성공 · ${result.provider} · ${result.model} · ${result.latencyMs}ms`);
+    const modelText = result.upstreamModel && result.upstreamModel !== result.model
+      ? `${result.model} → ${result.upstreamModel}`
+      : result.model;
+    setApiPanelResult('ok', `연결 성공 · ${result.provider} · ${modelText} · ${result.latencyMs}ms`);
+  } else if (result.authRequired) {
+    state.providerIssues[providerId] = { kind: 'auth', message: result.error || '' };
+    renderApiProviders();
+    const nextAction = providerId === 'openai'
+      ? '구독 인증 버튼으로 ChatGPT 계정을 다시 연결해 주세요.'
+      : 'API Key를 입력하고 Save를 눌러 주세요.';
+    setApiPanelResult('error', `인증 필요 · ${result.provider || providerLabel(providerId)} · ${result.error || '인증 정보가 없습니다.'} · ${nextAction}`);
   } else if (result.errorKind === 'billing') {
     state.providerIssues[providerId] = { kind: 'billing', message: result.error };
     renderApiProviders();
@@ -1009,6 +1097,10 @@ async function testProvider(providerId) {
       ? 'Plan 버튼으로 현재 GLM Coding Plan 사용량과 키 상태를 확인해 주세요.'
       : 'Billing 버튼으로 결제 페이지를 열어주세요.';
     setApiPanelResult('error', `요금제 확인 필요 · ${result.error} · ${nextAction}`);
+  } else if (result.errorKind === 'unsupported') {
+    state.providerIssues[providerId] = { kind: 'error', message: result.error || '' };
+    renderApiProviders();
+    setApiPanelResult('error', `모델 지원 불가 · ${result.provider || providerLabel(providerId)} · ${result.error || '현재 구독 인증에서 사용할 수 없는 모델입니다.'}`);
   } else {
     state.providerIssues[providerId] = { kind: result.errorKind || 'error', message: result.error || '' };
     renderApiProviders();
@@ -1148,25 +1240,38 @@ async function exportSelectedResult(target) {
       const index = tasks.findIndex((item) => item.id === result.task.id);
       if (index >= 0) tasks[index] = result.task;
     }
-    const info = result.export || {};
-    const parts = [];
-    if (info.pdfPath) parts.push(`PDF ${info.pdfPath}`);
-    if (info.markdownPath) parts.push(`Vault ${info.markdownPath}`);
     state.resultExport = {
       status: 'ok',
-      message: parts.length ? `저장 완료 · ${parts.join(' · ')}` : '저장 완료'
+      message: '저장 완료'
     };
     renderResultPanel();
     await refreshDashboard();
     state.resultExport = {
       status: 'ok',
-      message: parts.length ? `저장 완료 · ${parts.join(' · ')}` : '저장 완료'
+      message: '저장 완료'
     };
     renderResultPanel();
   } catch (error) {
     state.resultExport = { status: 'error', message: error.message };
     renderResultPanel();
   }
+}
+
+async function openResultPath(filePath, action) {
+  if (!filePath || !action) return;
+  const labels = { finder: 'Finder', preview: '미리보기', obsidian: 'Obsidian' };
+  state.resultExport = { status: 'pending', message: `${labels[action] || action}로 여는 중...` };
+  renderResultPanel();
+  try {
+    await api('/api/open-path', {
+      method: 'POST',
+      body: JSON.stringify({ path: filePath, action })
+    });
+    state.resultExport = { status: 'ok', message: `${labels[action] || action}로 열었습니다.` };
+  } catch (error) {
+    state.resultExport = { status: 'error', message: `열기 실패 · ${error.message}` };
+  }
+  renderResultPanel();
 }
 
 async function createApproval(event) {
@@ -1292,9 +1397,15 @@ function bindEvents() {
     refreshDashboard().catch((error) => addMessage('error', 'Refresh failed', error.message));
   });
   $('resultPanel').addEventListener('click', (event) => {
-    const button = event.target.closest('[data-result-export]');
-    if (!button) return;
-    exportSelectedResult(button.dataset.resultExport || 'all');
+    const exportButton = event.target.closest('[data-result-export]');
+    if (exportButton) {
+      exportSelectedResult(exportButton.dataset.resultExport || 'all');
+      return;
+    }
+    const openButton = event.target.closest('[data-open-result-path]');
+    if (openButton) {
+      openResultPath(openButton.dataset.openResultPath || '', openButton.dataset.openAction || '');
+    }
   });
   $('taskForm').addEventListener('submit', (event) => {
     createTask(event).catch((error) => addMessage('error', 'Task failed', error.message));
@@ -1321,6 +1432,8 @@ function bindEvents() {
 }
 
 async function boot() {
+  rememberInternalRoute();
+  updateResultBackLink();
   loadOfficePositions();
   loadSidebarState();
   bindEvents();
