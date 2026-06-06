@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>완료 항목 · Connect AI Web</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body class="completed-page">
+    <main class="main completed-main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Completed Work</p>
+          <h1>완료 항목</h1>
+        </div>
+        <div class="topbar-actions">
+          <a href="/" class="secondary nav-link">대시보드</a>
+        </div>
+      </header>
+
+      <section class="completed-layout">
+        <aside class="surface completed-list-panel">
+          <div class="surface-head">
+            <div>
+              <div class="section-kicker">Done</div>
+              <h2>결과 목록 <span id="completedCount" class="count-badge">0</span></h2>
+            </div>
+            <button id="refreshCompleted" type="button" class="secondary small">Refresh</button>
+          </div>
+          <div id="completedList" class="completed-list"></div>
+        </aside>
+
+        <section id="completedDetail" class="surface completed-detail" aria-live="polite">
+          <div class="empty">완료 항목을 불러오는 중입니다.</div>
+        </section>
+      </section>
+    </main>
+    <script src="/completed.js?v=20260606"></script>
+  </body>
+</html>

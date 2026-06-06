@@ -42,7 +42,10 @@
           <div>
             <p id="companyName" class="eyebrow">AI Company</p>
           </div>
-          <button id="apiPanelToggle" type="button" class="secondary api-toggle">API</button>
+          <div class="topbar-actions">
+            <a href="/completed" class="secondary nav-link">완료</a>
+            <button id="apiPanelToggle" type="button" class="secondary api-toggle">API</button>
+          </div>
         </header>
 
         <section class="overview">
@@ -66,16 +69,18 @@
               </div>
               <button id="refreshDashboard" type="button" class="secondary small">Refresh</button>
             </div>
-            <form id="taskForm" class="inline-form">
-              <input id="taskTitle" placeholder="새 작업 제목">
-              <select id="taskAgent"></select>
-              <select id="taskPriority">
-                <option value="normal">normal</option>
-                <option value="high">high</option>
-                <option value="urgent">urgent</option>
-                <option value="low">low</option>
-              </select>
-              <button type="submit">Add</button>
+            <form id="taskForm" class="task-form">
+              <textarea id="taskTitle" class="task-context-input" rows="4" placeholder="작업 내용 / 컨텍스트"></textarea>
+              <div class="task-controls">
+                <select id="taskAgent" aria-label="Agent"></select>
+                <select id="taskPriority" aria-label="Priority">
+                  <option value="normal">normal</option>
+                  <option value="high">high</option>
+                  <option value="urgent">urgent</option>
+                  <option value="low">low</option>
+                </select>
+                <button type="submit">Add</button>
+              </div>
             </form>
             <div id="taskList" class="item-list"></div>
             <aside id="taskDetail" class="task-detail" aria-live="polite"></aside>
@@ -151,6 +156,19 @@
           <div id="eventsList" class="events-list"></div>
         </section>
       </main>
+
+      <aside id="resultPanel" class="result-panel surface" aria-live="polite">
+        <div class="surface-head">
+          <div>
+            <div class="section-kicker">Result</div>
+            <h2>결과물</h2>
+          </div>
+          <button id="resultRefresh" type="button" class="secondary small">Refresh</button>
+        </div>
+        <div id="resultPanelBody" class="result-panel-body">
+          <div class="empty">작업을 선택하면 결과물이 여기에 표시됩니다.</div>
+        </div>
+      </aside>
     </div>
     <div id="apiPanel" class="api-panel hidden" aria-hidden="true">
       <button class="api-backdrop" type="button" data-close-api aria-label="닫기"></button>

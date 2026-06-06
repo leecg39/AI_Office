@@ -9,7 +9,8 @@ const state = {
   dashboard: null,
   sessionId: '',
   selectedTaskId: '',
-  runningTaskIds: new Set()
+  runningTaskIds: new Set(),
+  resultExport: { status: '', message: '' }
 };
 
 const $ = (id) => document.getElementById(id);
@@ -37,6 +38,25 @@ function fmtTime(value) {
 
 function taskAgent(task) {
   return state.agents.find((item) => item.id === task.agent) || state.agents[0] || {};
+}
+
+function allDashboardTasks() {
+  return state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all || [] : [];
+}
+
+function taskHasResultPayload(task) {
+  return Boolean(task && (task.result || task.error));
+}
+
+function selectedTask() {
+  const tasks = allDashboardTasks();
+  const selected = tasks.find((task) => task.id === state.selectedTaskId);
+  if (taskHasResultPayload(selected)) return selected;
+  return tasks.find((task) => task.status === 'done' && task.result)
+    || tasks.find(taskHasResultPayload)
+    || selected
+    || tasks[0]
+    || null;
 }
 
 const officePositions = {
@@ -206,27 +226,28 @@ function updateTeamNav() {
 function normalizeModelValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('moonshot:')) return raw;
+  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('zai:')) return raw;
+  if (raw.startsWith('moonshot:')) return 'zai:glm-5.1';
   return `local:${raw}`;
 }
 
 function providerFromModelValue(id) {
   if (id.startsWith('openai:')) return 'openai';
-  if (id.startsWith('moonshot:')) return 'moonshot';
+  if (id.startsWith('zai:')) return 'zai';
   return 'local';
 }
 
 function modelNameFromValue(id, provider) {
   return provider === 'openai'
     ? id.slice('openai:'.length)
-    : provider === 'moonshot'
-      ? id.slice('moonshot:'.length)
+    : provider === 'zai'
+      ? id.slice('zai:'.length)
       : id.slice('local:'.length);
 }
 
 function providerLabel(provider) {
   if (provider === 'openai') return 'OpenAI';
-  if (provider === 'moonshot') return 'Kimi';
+  if (provider === 'zai') return 'GLM 5.1';
   return 'Local';
 }
 
@@ -273,7 +294,7 @@ function renderModels() {
   const groups = [
     ['local', 'Local LLM'],
     ['openai', 'OpenAI'],
-    ['moonshot', 'Kimi']
+    ['zai', 'GLM 5.1']
   ];
   groups.forEach(([provider, label]) => {
     const items = all.filter((model) => model.provider === provider);
@@ -289,7 +310,7 @@ function renderModels() {
     });
     select.appendChild(group);
   });
-  all.filter((model) => !['local', 'openai', 'moonshot'].includes(model.provider)).forEach((model) => {
+  all.filter((model) => !['local', 'openai', 'zai'].includes(model.provider)).forEach((model) => {
     const option = document.createElement('option');
     option.value = model.id;
     option.textContent = model.label;
@@ -329,14 +350,32 @@ function renderApiProviders() {
     const method = provider.source === 'env'
       ? provider.apiKeyEnv
       : provider.authFlow === 'chatmock'
-        ? 'ChatMock'
+        ? '구독 인증'
       : provider.method === 'oauth'
         ? 'OAuth'
-        : provider.method === 'apiKey'
-          ? 'API Key'
-          : 'Not connected';
+      : provider.method === 'apiKey'
+        ? 'API Key'
+        : 'Not connected';
     const statusClass = issue.kind === 'billing' ? 'billing' : provider.connected ? 'connected' : '';
     const statusText = issue.kind === 'billing' ? 'Billing' : provider.connected ? 'Connected' : 'Offline';
+    const isSubscriptionProvider = provider.id === 'openai';
+    const isZaiProvider = provider.id === 'zai';
+    const authRow = isSubscriptionProvider
+      ? `<div class="subscription-auth-row">
+          <span>ChatGPT 구독 계정으로 연결</span>
+          <button type="button" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">구독 인증</button>
+        </div>`
+      : `<div class="api-key-row">
+          <input id="apiKey-${escapeHtml(provider.id)}" type="password" autocomplete="off" placeholder="${escapeHtml(provider.name)} API Key">
+          <button type="button" data-api-action="save-key" data-provider="${escapeHtml(provider.id)}">Save</button>
+        </div>`;
+    const subscriptionButton = isSubscriptionProvider
+      ? ''
+      : isZaiProvider
+        ? ''
+      : `<button type="button" class="secondary" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">OAuth</button>`;
+    const accountLabel = isSubscriptionProvider ? '구독 계정' : isZaiProvider ? '키 상태' : 'Account';
+    const billingLabel = isSubscriptionProvider ? '구독 관리' : isZaiProvider ? 'Plan' : 'Billing';
     return `
       <article class="api-provider ${statusClass}">
         <div class="api-provider-head">
@@ -346,15 +385,12 @@ function renderApiProviders() {
           </div>
           <span class="api-status ${statusClass}">${statusText}</span>
         </div>
-        <div class="api-key-row">
-          <input id="apiKey-${escapeHtml(provider.id)}" type="password" autocomplete="off" placeholder="${escapeHtml(provider.name)} API Key">
-          <button type="button" data-api-action="save-key" data-provider="${escapeHtml(provider.id)}">Save</button>
-        </div>
+        ${authRow}
         <div class="api-action-row">
-          <button type="button" class="secondary" data-api-action="account" data-provider="${escapeHtml(provider.id)}">Account</button>
-          <button type="button" class="secondary" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">OAuth</button>
+          <button type="button" class="secondary" data-api-action="account" data-provider="${escapeHtml(provider.id)}">${accountLabel}</button>
+          ${subscriptionButton}
           <button type="button" class="secondary" data-api-action="test" data-provider="${escapeHtml(provider.id)}">Test</button>
-          <button type="button" class="secondary" data-api-action="billing" data-provider="${escapeHtml(provider.id)}">Billing</button>
+          <button type="button" class="secondary" data-api-action="billing" data-provider="${escapeHtml(provider.id)}">${billingLabel}</button>
           <button type="button" class="secondary danger-outline" data-api-action="disconnect" data-provider="${escapeHtml(provider.id)}">Disconnect</button>
         </div>
       </article>
@@ -364,7 +400,7 @@ function renderApiProviders() {
 
 function openTasksByAgent() {
   const tasks = state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all : [];
-  const open = tasks.filter((task) => task.status !== 'done' && task.status !== 'cancelled');
+  const open = tasks.filter((task) => !['done', 'cancelled', 'failed'].includes(task.status || 'open'));
   const byAgent = new Map();
   open.forEach((task) => {
     if (!byAgent.has(task.agent)) byAgent.set(task.agent, []);
@@ -408,9 +444,9 @@ function renderOfficeFlow(flow, byAgent) {
     const accent = escapeHtml(agent.accent || '#35c8ff');
     const delay = `${(index * -0.32).toFixed(2)}s`;
     const title = task.title ? `${agent.name}: ${task.title}` : `${agent.name}: 작업 중`;
-    const runners = [0, 0.68, 1.36].map((offset) => `
-      <polygon class="flow-runner" points="-0.85,-0.7 1.65,0 -0.85,0.7">
-        <animateMotion dur="3.6s" begin="${(index * 0.18 + offset).toFixed(2)}s" repeatCount="indefinite" rotate="auto">
+    const runners = [0, 1.55, 3.1].map((offset) => `
+      <polygon class="flow-runner" points="-0.6,-0.48 1.15,0 -0.6,0.48">
+        <animateMotion dur="8s" begin="${(index * 0.18 + offset).toFixed(2)}s" repeatCount="indefinite" rotate="auto">
           <mpath href="#${routeId}"></mpath>
         </animateMotion>
       </polygon>
@@ -538,8 +574,8 @@ function bindOfficeMarkerDrag(button, layer) {
 function renderTaskDetail() {
   const box = $('taskDetail');
   if (!box) return;
-  const tasks = state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all : [];
-  const open = tasks.filter((task) => task.status !== 'done' && task.status !== 'cancelled');
+  const tasks = allDashboardTasks();
+  const open = tasks.filter((task) => !['done', 'cancelled', 'failed'].includes(task.status || 'open'));
   const selected = tasks.find((task) => task.id === state.selectedTaskId) || open[0] || tasks[0];
   if (!selected) {
     box.innerHTML = '<div class="empty">작업을 선택하면 진행 상황이 표시됩니다.</div>';
@@ -580,17 +616,83 @@ function renderTaskDetail() {
         </li>
       `).join('')}
     </ol>
+    <div class="result-inline-actions">
+      <button type="button" class="secondary small" data-open-result="${escapeHtml(selected.id)}">결과 패널</button>
+    </div>
     ${errorHtml}
     ${resultHtml}
+  `;
+  const openButton = box.querySelector('[data-open-result]');
+  if (openButton) {
+    openButton.addEventListener('click', () => {
+      state.selectedTaskId = openButton.dataset.openResult || state.selectedTaskId;
+      state.resultExport = { status: '', message: '' };
+      renderResultPanel();
+    });
+  }
+}
+
+function renderResultPanel() {
+  const panel = $('resultPanelBody');
+  if (!panel) return;
+  const task = selectedTask();
+  if (!task) {
+    panel.innerHTML = '<div class="empty">작업을 선택하면 결과물이 여기에 표시됩니다.</div>';
+    return;
+  }
+  state.selectedTaskId = task.id;
+  const agent = taskAgent(task);
+  const hasResult = Boolean(task.result || task.error);
+  const content = task.result || task.error || '아직 저장된 결과물이 없습니다. 작업을 실행하거나 완료 결과를 저장하면 이곳에 표시됩니다.';
+  const exports = task.exports || {};
+  const exportMessage = state.resultExport.message
+    ? `<div class="result-export-message ${escapeHtml(state.resultExport.status)}">${escapeHtml(state.resultExport.message)}</div>`
+    : '';
+  const savedPaths = exports.markdownPath || exports.pdfPath
+    ? `
+      <div class="result-paths">
+        ${exports.markdownPath ? `<span>Vault: ${escapeHtml(exports.markdownPath)}</span>` : ''}
+        ${exports.pdfPath ? `<span>PDF: ${escapeHtml(exports.pdfPath)}</span>` : ''}
+      </div>
+    `
+    : '';
+  const sources = Array.isArray(task.sources) && task.sources.length
+    ? `<div class="result-sources"><strong>Sources</strong>${task.sources.map((source) => `<span>${escapeHtml(source)}</span>`).join('')}</div>`
+    : '';
+  panel.innerHTML = `
+    <div class="result-head">
+      <span class="agent-avatar small" style="--accent:${escapeHtml(agent.accent || '#35c8ff')}">
+        ${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="">` : `<span>${escapeHtml(agent.emoji || '')}</span>`}
+      </span>
+      <div>
+        <div class="section-kicker">${escapeHtml(agent.name || task.agent || 'Agent')}</div>
+        <h3>${escapeHtml(task.title || '작업 결과')}</h3>
+        <p>${escapeHtml(task.status || 'open')} · ${escapeHtml(fmtTime(task.completedAt || task.updatedAt || task.createdAt))}</p>
+      </div>
+    </div>
+    <div class="result-actions">
+      <button type="button" class="secondary small" data-result-export="pdf"${hasResult ? '' : ' disabled'}>PDF 저장</button>
+      <button type="button" class="secondary small" data-result-export="obsidian"${hasResult ? '' : ' disabled'}>Vault 저장</button>
+      <button type="button" class="small" data-result-export="all"${hasResult ? '' : ' disabled'}>둘 다 저장</button>
+    </div>
+    ${exportMessage}
+    <div class="result-content ${task.error ? 'error' : ''}">${escapeHtml(content)}</div>
+    ${sources}
+    ${savedPaths}
   `;
 }
 
 function renderTasks() {
   const list = $('taskList');
   const tasks = state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all : [];
-  const visible = tasks.filter((task) => task.status !== 'done' && task.status !== 'cancelled').slice(0, 12);
+  const visible = tasks.filter((task) => !['done', 'cancelled', 'failed'].includes(task.status || 'open')).slice(0, 12);
   if (visible.length === 0) {
     list.innerHTML = '<div class="empty">열린 작업이 없습니다.</div>';
+    if (!state.selectedTaskId) {
+      const latestFailed = tasks.find((task) => task.status === 'failed');
+      state.selectedTaskId = latestFailed ? latestFailed.id : '';
+    }
+    renderTaskDetail();
     return;
   }
   list.innerHTML = visible.map((task) => {
@@ -724,6 +826,7 @@ function renderAll() {
   renderTeam();
   renderOfficeActivity();
   renderTasks();
+  renderResultPanel();
   renderApprovals();
   renderEvents();
   renderModels();
@@ -743,6 +846,7 @@ async function selectTask(id) {
     // The dashboard copy is enough for company-sourced tasks if detail lookup fails.
   }
   renderTasks();
+  renderResultPanel();
   renderOfficeActivity();
 }
 
@@ -835,31 +939,32 @@ async function pollOAuthStatus(providerId, flowId, attempts = 45) {
     const status = await api(`/api/llm/oauth/status?provider=${encodeURIComponent(providerId)}&flowId=${encodeURIComponent(flowId)}`);
     if (status.provider && status.provider.connected) return status.provider;
     if (status.flow && status.flow.status === 'error') {
-      throw new Error(status.flow.error || 'OAuth 인증에 실패했습니다.');
+      throw new Error(status.flow.error || '인증에 실패했습니다.');
     }
   }
-  throw new Error('OAuth 인증 대기 시간이 초과되었습니다.');
+  throw new Error('인증 대기 시간이 초과되었습니다.');
 }
 
 async function startProviderOAuth(providerId) {
-  setApiPanelResult('pending', 'OAuth 인증 준비 중...');
+  const isSubscriptionProvider = providerId === 'openai';
+  setApiPanelResult('pending', isSubscriptionProvider ? '구독 인증 준비 중...' : 'OAuth 인증 준비 중...');
   const result = await api('/api/llm/oauth/start', {
     method: 'POST',
     body: JSON.stringify({ provider: providerId })
   });
   if (!result.available) {
     if (result.authUrl) window.open(result.authUrl, '_blank');
-    setApiPanelResult('pending', result.message || 'OAuth 클라이언트 설정이 없습니다.');
+    setApiPanelResult('pending', result.message || '인증 설정이 없습니다.');
     return;
   }
   if (result.authUrl) window.open(result.authUrl, '_blank');
-  setApiPanelResult('pending', result.message || 'OAuth 인증 창을 열었습니다.');
+  setApiPanelResult('pending', result.message || (isSubscriptionProvider ? '구독 인증 창을 열었습니다.' : 'OAuth 인증 창을 열었습니다.'));
   const attempts = result.mode === 'openai-api-key-assisted' || result.mode === 'chatmock-openai' ? 180 : 45;
   await pollOAuthStatus(providerId, result.flowId, attempts);
   await loadProviders();
   await refreshModels();
   const doneText = result.mode === 'chatmock-openai'
-    ? 'OpenAI ChatMock 인증 연결 완료'
+    ? 'OpenAI 구독 인증 연결 완료'
     : result.mode === 'openai-api-key-assisted'
       ? 'OpenAI 인증 연결 완료'
     : `${providerLabel(providerId)} OAuth 연결 완료`;
@@ -900,7 +1005,10 @@ async function testProvider(providerId) {
   } else if (result.errorKind === 'billing') {
     state.providerIssues[providerId] = { kind: 'billing', message: result.error };
     renderApiProviders();
-    setApiPanelResult('error', `결제 확인 필요 · ${result.error} · Billing 버튼으로 결제 페이지를 열어주세요.`);
+    const nextAction = providerId === 'zai'
+      ? 'Plan 버튼으로 현재 GLM Coding Plan 사용량과 키 상태를 확인해 주세요.'
+      : 'Billing 버튼으로 결제 페이지를 열어주세요.';
+    setApiPanelResult('error', `요금제 확인 필요 · ${result.error} · ${nextAction}`);
   } else {
     state.providerIssues[providerId] = { kind: result.errorKind || 'error', message: result.error || '' };
     renderApiProviders();
@@ -912,11 +1020,13 @@ function openProviderBilling(providerId) {
   const provider = state.providers.find((item) => item.id === providerId);
   const url = provider && (provider.billingUrl || provider.keyUrl);
   if (!url) {
-    setApiPanelResult('error', '결제 페이지 주소가 없습니다.');
+    setApiPanelResult('error', providerId === 'zai' ? '요금제 상태 페이지 주소가 없습니다.' : '결제 페이지 주소가 없습니다.');
     return;
   }
   window.open(url, '_blank');
-  setApiPanelResult('pending', `${providerLabel(providerId)} 결제 페이지를 열었습니다.`);
+  setApiPanelResult('pending', providerId === 'zai'
+    ? `${providerLabel(providerId)} 요금제/키 상태 페이지를 열었습니다.`
+    : `${providerLabel(providerId)} 결제 페이지를 열었습니다.`);
 }
 
 async function testLlmConnection() {
@@ -980,12 +1090,14 @@ async function saveConfig() {
 
 async function createTask(event) {
   event.preventDefault();
-  const title = $('taskTitle').value.trim();
+  const context = $('taskTitle').value.trim();
+  const title = context.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
   if (!title) return;
   await api('/api/tasks', {
     method: 'POST',
     body: JSON.stringify({
       title,
+      description: context,
       agent: $('taskAgent').value,
       priority: $('taskPriority').value
     })
@@ -1018,6 +1130,42 @@ async function runTask(id) {
   } finally {
     state.runningTaskIds.delete(id);
     await refreshDashboard();
+  }
+}
+
+async function exportSelectedResult(target) {
+  const task = selectedTask();
+  if (!task) return;
+  state.resultExport = { status: 'pending', message: '결과 저장 중...' };
+  renderResultPanel();
+  try {
+    const result = await api(`/api/tasks/${encodeURIComponent(task.id)}/export`, {
+      method: 'POST',
+      body: JSON.stringify({ target })
+    });
+    if (result.task && state.dashboard && state.dashboard.tasks) {
+      const tasks = state.dashboard.tasks.all || [];
+      const index = tasks.findIndex((item) => item.id === result.task.id);
+      if (index >= 0) tasks[index] = result.task;
+    }
+    const info = result.export || {};
+    const parts = [];
+    if (info.pdfPath) parts.push(`PDF ${info.pdfPath}`);
+    if (info.markdownPath) parts.push(`Vault ${info.markdownPath}`);
+    state.resultExport = {
+      status: 'ok',
+      message: parts.length ? `저장 완료 · ${parts.join(' · ')}` : '저장 완료'
+    };
+    renderResultPanel();
+    await refreshDashboard();
+    state.resultExport = {
+      status: 'ok',
+      message: parts.length ? `저장 완료 · ${parts.join(' · ')}` : '저장 완료'
+    };
+    renderResultPanel();
+  } catch (error) {
+    state.resultExport = { status: 'error', message: error.message };
+    renderResultPanel();
   }
 }
 
@@ -1138,6 +1286,15 @@ function bindEvents() {
   });
   $('refreshDashboard').addEventListener('click', () => {
     refreshDashboard().catch((error) => addMessage('error', 'Refresh failed', error.message));
+  });
+  $('resultRefresh').addEventListener('click', () => {
+    state.resultExport = { status: '', message: '' };
+    refreshDashboard().catch((error) => addMessage('error', 'Refresh failed', error.message));
+  });
+  $('resultPanel').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-result-export]');
+    if (!button) return;
+    exportSelectedResult(button.dataset.resultExport || 'all');
   });
   $('taskForm').addEventListener('submit', (event) => {
     createTask(event).catch((error) => addMessage('error', 'Task failed', error.message));

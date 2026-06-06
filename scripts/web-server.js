@@ -13,12 +13,17 @@ const DATA_DIR = path.join(WEB_DIR, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const LLM_CREDENTIALS_FILE = path.join(DATA_DIR, 'llm-credentials.local.json');
 const LOCAL_CONFIG = path.join(WEB_DIR, 'config.local.json');
+const DEFAULT_OBSIDIAN_VAULTS = [
+  path.join(os.homedir(), 'Documents', 'Obsidian Vault'),
+  path.join(os.homedir(), 'Documents', 'AIS', 'AIS'),
+  path.join(os.homedir(), 'Documents', 'zettel-connect-starter')
+];
 const PORT = Number(process.env.CONNECT_AI_WEB_PORT || process.env.PORT || 8788);
 const MAX_BODY = 2 * 1024 * 1024;
 const BRAIN_CACHE_TTL_MS = 10 * 1000;
 const MAX_TASK_RUN_TIMEOUT_MS = 60000;
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
-const MOONSHOT_API_BASE = 'https://api.moonshot.ai/v1';
+const ZAI_API_BASE = process.env.ZAI_API_BASE || 'https://api.z.ai/api/coding/paas/v4';
 const CHATGPT_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CHATMOCK_OPENAI_CLIENT_ID = process.env.CONNECT_AI_CHATMOCK_CLIENT_ID
   || process.env.CHATGPT_LOCAL_CLIENT_ID
@@ -35,21 +40,21 @@ const PROVIDERS = {
     id: 'openai',
     name: 'OpenAI',
     apiKeyEnv: 'OPENAI_API_KEY',
-    accountUrl: 'https://platform.openai.com/settings/organization/billing',
+    accountUrl: 'https://chatgpt.com/#settings/Subscription',
     keyUrl: 'https://platform.openai.com/settings/organization/api-keys',
-    billingUrl: 'https://platform.openai.com/settings/organization/billing',
+    billingUrl: 'https://chatgpt.com/#settings/Subscription',
     docsUrl: 'https://developers.openai.com/api/docs/guides/latest-model',
-    accountAuthMessage: 'OpenAI ChatGPT 구독 로그인은 API 호출 인증으로 직접 사용할 수 없습니다. API Billing/Key 페이지를 열었습니다.'
+    accountAuthMessage: 'ChatGPT 구독 계정 페이지를 열었습니다. Connect AI 인증은 구독 인증 버튼으로 진행해 주세요.'
   },
-  moonshot: {
-    id: 'moonshot',
-    name: 'Kimi',
-    apiKeyEnv: 'MOONSHOT_API_KEY',
-    accountUrl: 'https://platform.moonshot.ai/console/billing',
-    keyUrl: 'https://platform.moonshot.ai/console/api-keys',
-    billingUrl: 'https://platform.moonshot.ai/console/billing',
-    docsUrl: 'https://platform.kimi.ai/docs/api/overview',
-    accountAuthMessage: 'Kimi 구독/웹 계정은 API 호출 인증으로 직접 사용할 수 없습니다. API 콘솔에서 키와 결제 상태를 확인해 주세요.'
+  zai: {
+    id: 'zai',
+    name: 'GLM 5.1',
+    apiKeyEnv: 'ZAI_API_KEY',
+    accountUrl: 'https://z.ai/manage-apikey/apikey-list',
+    keyUrl: 'https://z.ai/manage-apikey/apikey-list',
+    billingUrl: 'https://z.ai/manage-apikey/billing',
+    docsUrl: 'https://docs.z.ai/guides/llm/glm-5.1',
+    accountAuthMessage: 'Z.AI Lite / GLM Coding Plan 키는 Coding Plan API 엔드포인트로 연결됩니다. API Key 페이지에서 키 상태를 확인해 주세요.'
   }
 };
 const PAID_MODELS = [
@@ -61,12 +66,12 @@ const PAID_MODELS = [
     paid: true
   },
   {
-    id: 'moonshot:kimi-k2.6',
-    provider: 'moonshot',
-    model: 'kimi-k2.6',
-    label: 'Kimi · Kimi 2.6 (kimi-k2.6)',
+    id: 'zai:glm-5.1',
+    provider: 'zai',
+    model: 'glm-5.1',
+    label: 'GLM 5.1 · Z.AI Lite / Coding Plan (glm-5.1)',
     paid: true,
-    contextLength: 256000
+    contextLength: 200000
   }
 ];
 
@@ -80,6 +85,7 @@ const MIME = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
   '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8'
 };
@@ -208,6 +214,21 @@ function expandHome(input) {
   if (trimmed === '~') return os.homedir();
   if (trimmed.startsWith('~/')) return path.join(os.homedir(), trimmed.slice(2));
   return trimmed;
+}
+
+function isObsidianVault(dir) {
+  try {
+    return Boolean(dir) && fs.existsSync(path.join(dir, '.obsidian'));
+  } catch {
+    return false;
+  }
+}
+
+function resolveObsidianVaultPath(raw, localBrainPath = '') {
+  const explicit = expandHome(raw || process.env.CONNECT_AI_OBSIDIAN_VAULT || '');
+  if (explicit) return explicit;
+  const candidates = [localBrainPath, ...DEFAULT_OBSIDIAN_VAULTS].filter(Boolean);
+  return candidates.find(isObsidianVault) || DEFAULT_OBSIDIAN_VAULTS[0];
 }
 
 function stripJsonComments(text) {
@@ -355,6 +376,12 @@ function getConfig() {
     || local.localBrainPath
     || settings['connectAiLab.localBrainPath']
     || path.join(os.homedir(), '.connect-ai-brain'));
+  const obsidianVaultPath = resolveObsidianVaultPath(
+    process.env.CONNECT_AI_OBSIDIAN_VAULT
+      || local.obsidianVaultPath
+      || settings['connectAiLab.obsidianVaultPath'],
+    localBrainPath
+  );
   const timeoutMs = Number(process.env.CONNECT_AI_TIMEOUT_MS
     || local.timeoutMs
     || ((settings['connectAiLab.requestTimeout'] || 300) * 1000));
@@ -365,6 +392,7 @@ function getConfig() {
     ollamaBase: String(ollamaBase).replace(/\/+$/, ''),
     defaultModel: String(defaultModel || ''),
     localBrainPath,
+    obsidianVaultPath,
     timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 300000,
     chatTimeoutMs: Number.isFinite(chatTimeoutMs) ? chatTimeoutMs : 45000
   };
@@ -416,12 +444,12 @@ function ensureChatMockCallbackServer() {
         return;
       }
       if (url.pathname === '/success') {
-        sendHtml(res, 200, oauthCallbackPage('OpenAI ChatMock 연결 완료', 'Connect AI로 돌아가 연결 상태를 확인하세요. 이 창은 닫아도 됩니다.'));
+        sendHtml(res, 200, oauthCallbackPage('OpenAI 구독 인증 연결 완료', 'Connect AI로 돌아가 연결 상태를 확인하세요. 이 창은 닫아도 됩니다.'));
         return;
       }
-      sendHtml(res, 404, oauthCallbackPage('OpenAI ChatMock 인증 실패', '지원하지 않는 콜백 경로입니다.'));
+      sendHtml(res, 404, oauthCallbackPage('OpenAI 구독 인증 실패', '지원하지 않는 콜백 경로입니다.'));
     } catch (error) {
-      sendHtml(res, 500, oauthCallbackPage('OpenAI ChatMock 인증 실패', error.message || String(error)));
+      sendHtml(res, 500, oauthCallbackPage('OpenAI 구독 인증 실패', error.message || String(error)));
     }
   });
   chatMockCallbackServer.on('error', (error) => {
@@ -507,7 +535,7 @@ function createChatMockOpenAiAuthFlow(req, provider) {
     mode: 'chatmock-openai',
     flowId,
     authUrl: authUrl.toString(),
-    message: 'ChatMock 방식의 OpenAI 인증 창을 열었습니다. 인증이 끝나면 LLM 연결이 자동 완료됩니다.'
+    message: 'ChatGPT 구독 계정 인증 창을 열었습니다. 인증이 끝나면 LLM 연결이 자동 완료됩니다.'
   };
 }
 
@@ -645,12 +673,12 @@ async function handleChatMockOpenAiCallback(res, flow, code) {
     flow.error = '';
     const message = auth.apiKey
       ? 'Connect AI로 돌아가 연결 상태를 확인하세요. 이 창은 닫아도 됩니다.'
-      : 'OpenAI Platform API Key는 자동 발급되지 않았지만 ChatMock 토큰 인증은 저장되었습니다. Connect AI로 돌아가 연결 상태를 확인하세요.';
-    sendHtml(res, 200, oauthCallbackPage('OpenAI ChatMock 연결 완료', message));
+      : 'OpenAI API Key는 자동 발급되지 않았지만 ChatGPT 구독 인증 토큰은 저장되었습니다. Connect AI로 돌아가 연결 상태를 확인하세요.';
+    sendHtml(res, 200, oauthCallbackPage('OpenAI 구독 인증 연결 완료', message));
   } catch (error) {
     flow.status = 'error';
-    flow.error = 'ChatMock OpenAI 인증은 완료되지 않았습니다. OpenAI 계정 인증 상태를 확인한 뒤 다시 시도해 주세요.';
-    sendHtml(res, 502, oauthCallbackPage('OpenAI ChatMock 인증 실패', flow.error));
+    flow.error = 'OpenAI 구독 인증은 완료되지 않았습니다. ChatGPT 구독 계정 상태를 확인한 뒤 다시 시도해 주세요.';
+    sendHtml(res, 502, oauthCallbackPage('OpenAI 구독 인증 실패', flow.error));
   }
 }
 
@@ -658,7 +686,7 @@ async function handleChatMockLocalCallback(res, url) {
   const flowId = url.searchParams.get('state') || '';
   const flow = flowId ? oauthFlows.get(flowId) : null;
   if (!flow || flow.provider !== 'openai' || flow.mode !== 'chatmock-openai') {
-    sendHtml(res, 404, oauthCallbackPage('OpenAI ChatMock 인증 실패', '인증 세션을 찾을 수 없습니다. API 패널에서 다시 시도해 주세요.'));
+    sendHtml(res, 404, oauthCallbackPage('OpenAI 구독 인증 실패', '인증 세션을 찾을 수 없습니다. API 패널에서 다시 시도해 주세요.'));
     return;
   }
 
@@ -667,7 +695,7 @@ async function handleChatMockLocalCallback(res, url) {
   if (error || !code) {
     flow.status = 'error';
     flow.error = error || '인증 코드가 없습니다.';
-    sendHtml(res, 400, oauthCallbackPage('OpenAI ChatMock 인증 실패', flow.error));
+    sendHtml(res, 400, oauthCallbackPage('OpenAI 구독 인증 실패', flow.error));
     return;
   }
 
@@ -750,6 +778,183 @@ function cleanText(value, max = 4000) {
 
 function cleanSecret(value, max = 4000) {
   return String(value || '').replace(/\0/g, '').trim().slice(0, max);
+}
+
+function safeFileName(value, fallback = 'connect-ai-result') {
+  const cleaned = String(value || '')
+    .normalize('NFC')
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  return (cleaned || fallback).replace(/\s/g, '-');
+}
+
+function formatDateForFile(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
+  return date.toISOString().slice(0, 10);
+}
+
+function taskExportBaseName(task) {
+  const date = formatDateForFile(task.completedAt || task.updatedAt || task.createdAt || nowIso());
+  return `${date}-${safeFileName(task.title || task.id)}-${safeFileName(task.id, 'task')}`;
+}
+
+function taskExportMarkdown(task, config, agent = {}) {
+  const resultText = task.result || task.error || task.description || '저장된 결과물이 없습니다.';
+  const sources = Array.isArray(task.sources) ? task.sources.filter(Boolean) : [];
+  const lines = [
+    '---',
+    `title: ${JSON.stringify(task.title || 'Connect AI Result')}`,
+    `task_id: ${JSON.stringify(task.id || '')}`,
+    `agent: ${JSON.stringify(agent.name || task.agent || 'Agent')}`,
+    `status: ${JSON.stringify(task.status || '')}`,
+    `created: ${JSON.stringify(task.createdAt || '')}`,
+    `completed: ${JSON.stringify(task.completedAt || '')}`,
+    `source: ${JSON.stringify('Connect AI Web')}`,
+    '---',
+    '',
+    `# ${task.title || 'Connect AI Result'}`,
+    '',
+    `- Agent: ${agent.name || task.agent || 'Agent'}`,
+    `- Status: ${task.status || '-'}`,
+    `- Created: ${task.createdAt || '-'}`,
+    `- Completed: ${task.completedAt || task.updatedAt || '-'}`,
+    `- Brain Folder: ${config.localBrainPath || '-'}`,
+    '',
+    '## Result',
+    '',
+    resultText,
+    ''
+  ];
+  if (sources.length) {
+    lines.push('## Sources', '', ...sources.map((source) => `- ${source}`), '');
+  }
+  return lines.join('\n');
+}
+
+function wrapTextForPdf(value, maxChars = 58) {
+  const output = [];
+  String(value || '').replace(/\r\n/g, '\n').split('\n').forEach((line) => {
+    const chars = Array.from(line);
+    if (!chars.length) {
+      output.push('');
+      return;
+    }
+    let chunk = '';
+    chars.forEach((char) => {
+      const next = chunk + char;
+      if (Array.from(next).length > maxChars) {
+        output.push(chunk);
+        chunk = char;
+      } else {
+        chunk = next;
+      }
+    });
+    if (chunk) output.push(chunk);
+  });
+  return output;
+}
+
+function utf16beHex(value) {
+  const le = Buffer.from(String(value || ''), 'utf16le');
+  const be = Buffer.alloc(le.length);
+  for (let index = 0; index < le.length; index += 2) {
+    be[index] = le[index + 1] || 0;
+    be[index + 1] = le[index] || 0;
+  }
+  return be.toString('hex').toUpperCase();
+}
+
+function createPdfBuffer(markdownText) {
+  const lines = wrapTextForPdf(markdownText, 56);
+  const pages = [];
+  for (let index = 0; index < lines.length; index += 44) {
+    pages.push(lines.slice(index, index + 44));
+  }
+  if (!pages.length) pages.push(['']);
+
+  const objects = new Map();
+  objects.set(1, Buffer.from('<< /Type /Catalog /Pages 2 0 R >>\n'));
+  objects.set(3, Buffer.from([
+    '<< /Type /Font /Subtype /Type0 /BaseFont /HYSMyeongJo-Medium',
+    '/Encoding /UniKS-UCS2-H',
+    '/DescendantFonts [ << /Type /Font /Subtype /CIDFontType0 /BaseFont /HYSMyeongJo-Medium',
+    '/CIDSystemInfo << /Registry (Adobe) /Ordering (Korea1) /Supplement 2 >>',
+    '/FontDescriptor << /Type /FontDescriptor /FontName /HYSMyeongJo-Medium /Flags 6',
+    '/FontBBox [-6 -145 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -145 /CapHeight 880 /StemV 80 >>',
+    '>> ] >>\n'
+  ].join(' ')));
+
+  const pageRefs = [];
+  pages.forEach((pageLines, index) => {
+    const pageObj = 4 + index * 2;
+    const contentObj = pageObj + 1;
+    pageRefs.push(`${pageObj} 0 R`);
+    const commands = ['BT', '/F1 11 Tf', '48 790 Td', '15 TL'];
+    pageLines.forEach((line) => {
+      commands.push(`<${utf16beHex(line)}> Tj`, 'T*');
+    });
+    commands.push('ET');
+    const stream = Buffer.from(commands.join('\n'), 'ascii');
+    objects.set(pageObj, Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObj} 0 R >>\n`));
+    objects.set(contentObj, Buffer.concat([
+      Buffer.from(`<< /Length ${stream.length} >>\nstream\n`),
+      stream,
+      Buffer.from('\nendstream\n')
+    ]));
+  });
+  objects.set(2, Buffer.from(`<< /Type /Pages /Count ${pages.length} /Kids [${pageRefs.join(' ')}] >>\n`));
+
+  const maxObject = Math.max(...objects.keys());
+  const parts = [Buffer.from('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n', 'binary')];
+  const offsets = Array(maxObject + 1).fill(0);
+  for (let objectNumber = 1; objectNumber <= maxObject; objectNumber += 1) {
+    const content = objects.get(objectNumber);
+    if (!content) continue;
+    offsets[objectNumber] = parts.reduce((sum, part) => sum + part.length, 0);
+    parts.push(Buffer.from(`${objectNumber} 0 obj\n`), content, Buffer.from('endobj\n'));
+  }
+  const xrefOffset = parts.reduce((sum, part) => sum + part.length, 0);
+  const xref = [
+    'xref',
+    `0 ${maxObject + 1}`,
+    '0000000000 65535 f ',
+    ...offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n `),
+    'trailer',
+    `<< /Size ${maxObject + 1} /Root 1 0 R >>`,
+    'startxref',
+    String(xrefOffset),
+    '%%EOF',
+    ''
+  ].join('\n');
+  parts.push(Buffer.from(xref));
+  return Buffer.concat(parts);
+}
+
+function writeTaskExport(task, config, target = 'all') {
+  const agent = AGENTS.find((item) => item.id === task.agent) || {};
+  const vaultPath = resolveObsidianVaultPath(config.obsidianVaultPath, config.localBrainPath);
+  const exportDir = path.join(vaultPath, 'Connect AI', 'Results');
+  const baseName = taskExportBaseName(task);
+  const markdown = taskExportMarkdown(task, config, agent);
+  const output = {
+    vaultPath,
+    exportDir,
+    markdownPath: '',
+    pdfPath: ''
+  };
+  fs.mkdirSync(exportDir, { recursive: true });
+  if (target === 'all' || target === 'obsidian') {
+    output.markdownPath = path.join(exportDir, `${baseName}.md`);
+    fs.writeFileSync(output.markdownPath, markdown, 'utf8');
+  }
+  if (target === 'all' || target === 'pdf') {
+    output.pdfPath = path.join(exportDir, `${baseName}.pdf`);
+    fs.writeFileSync(output.pdfPath, createPdfBuffer(markdown));
+  }
+  return output;
 }
 
 function pushEvent(state, type, title, meta = {}) {
@@ -1029,7 +1234,8 @@ function isEmbeddingModel(model) {
 function parseModelRef(value) {
   const raw = String(value || '').trim();
   if (raw.startsWith('openai:')) return { provider: 'openai', model: raw.slice('openai:'.length) };
-  if (raw.startsWith('moonshot:')) return { provider: 'moonshot', model: raw.slice('moonshot:'.length) };
+  if (raw.startsWith('zai:')) return { provider: 'zai', model: raw.slice('zai:'.length) };
+  if (raw.startsWith('moonshot:')) return { provider: 'zai', model: 'glm-5.1' };
   if (raw.startsWith('local:')) return { provider: 'local', model: raw.slice('local:'.length) };
   return { provider: 'local', model: raw };
 }
@@ -1244,13 +1450,13 @@ async function callChatMockOpenAiModel(credential, model, messages, requestTimeo
 
 function providerName(provider, config) {
   if (provider === 'openai') return 'OpenAI';
-  if (provider === 'moonshot') return 'Kimi';
+  if (provider === 'zai') return 'GLM 5.1';
   return isLmStudio(config.ollamaBase) ? 'LM Studio' : 'Ollama';
 }
 
 function providerBase(provider, config) {
   if (provider === 'openai') return OPENAI_API_BASE;
-  if (provider === 'moonshot') return MOONSHOT_API_BASE;
+  if (provider === 'zai') return ZAI_API_BASE;
   return config.ollamaBase;
 }
 
@@ -1329,7 +1535,7 @@ async function callModel(config, payload) {
     if (selectedModel.provider === 'openai') {
       const credential = providerCredential('openai');
       if (!credential.token) {
-        const error = new Error('OpenAI API Key 또는 OAuth 인증이 필요합니다.');
+        const error = new Error('OpenAI 구독 인증이 필요합니다.');
         error.code = 'OPENAI_AUTH_REQUIRED';
         throw error;
       }
@@ -1355,23 +1561,25 @@ async function callModel(config, payload) {
       return extractResponsesText(response.data).trim();
     }
 
-    if (selectedModel.provider === 'moonshot') {
-      const credential = providerCredential('moonshot');
+    if (selectedModel.provider === 'zai') {
+      const credential = providerCredential('zai');
       if (!credential.token) {
-        const error = new Error('Kimi API Key 또는 OAuth 인증이 필요합니다.');
-        error.code = 'MOONSHOT_AUTH_REQUIRED';
+        const error = new Error('GLM 5.1 / Z.AI API Key가 필요합니다.');
+        error.code = 'ZAI_AUTH_REQUIRED';
         throw error;
       }
-      const response = await axios.post(`${MOONSHOT_API_BASE}/chat/completions`, {
+      const response = await axios.post(`${ZAI_API_BASE}/chat/completions`, {
         model,
         messages: nextMessages,
-        max_completion_tokens: maxTokens,
+        max_tokens: maxTokens,
         thinking: { type: 'disabled' },
+        temperature: 1,
         stream: false
       }, {
         timeout: requestTimeout,
         headers: {
           Authorization: `Bearer ${credential.token}`,
+          'Accept-Language': 'en-US,en',
           'Content-Type': 'application/json'
         }
       });
@@ -1482,7 +1690,7 @@ async function testLlmConnection(config, payload = {}) {
     stages: [],
     authRequired: false,
     authUrl: '',
-    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'moonshot'
+    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'zai'
       ? (providerConfig(selectedRef.provider).billingUrl || '')
       : '',
     flowId: '',
@@ -1491,7 +1699,7 @@ async function testLlmConnection(config, payload = {}) {
     text: ''
   };
 
-  if (selectedRef.provider === 'openai' || selectedRef.provider === 'moonshot') {
+  if (selectedRef.provider === 'openai' || selectedRef.provider === 'zai') {
     result.model = selectedRef.model;
     if (!result.model) {
       result.error = `${result.provider} 모델을 선택해 주세요.`;
@@ -1504,11 +1712,11 @@ async function testLlmConnection(config, payload = {}) {
     if (!credential.token) {
       result.authRequired = true;
       result.authUrl = selectedRef.provider === 'openai'
-        ? 'https://platform.openai.com/settings/organization/api-keys'
-        : 'https://platform.moonshot.ai/console/api-keys';
+        ? 'https://chatgpt.com/#settings/Subscription'
+        : 'https://z.ai/manage-apikey/apikey-list';
       result.error = selectedRef.provider === 'openai'
-        ? 'OpenAI API Key 또는 OAuth 인증이 필요합니다.'
-        : 'Kimi API Key 또는 OAuth 인증이 필요합니다.';
+        ? 'OpenAI 구독 인증이 필요합니다.'
+        : 'GLM 5.1 / Z.AI API Key가 필요합니다.';
       result.latencyMs = Date.now() - startedAt;
       result.stages.push({ name: 'auth', ok: false, error: result.error });
       return result;
@@ -1875,6 +2083,46 @@ async function handleTasks(req, res, pathname, config) {
         saveState(latest);
       }
       sendJson(res, 502, { ok: false, error: modelErrorMessage(error), task: latestTask ? enrichTask(latestTask) : undefined });
+    }
+    return true;
+  }
+
+  const exportMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/export$/);
+  if (exportMatch && req.method === 'POST') {
+    const id = decodeURIComponent(exportMatch[1]);
+    const body = await readJsonBody(req);
+    const target = ['all', 'pdf', 'obsidian'].includes(body.target) ? body.target : 'all';
+    const listedTask = listTasks(state, config).find((item) => item.id === id);
+    if (!listedTask) {
+      sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+      return true;
+    }
+    if (!listedTask.result && !listedTask.error && !listedTask.description) {
+      sendJson(res, 400, { ok: false, error: 'RESULT_NOT_AVAILABLE' });
+      return true;
+    }
+    try {
+      const exportInfo = writeTaskExport(listedTask, config, target);
+      const localTask = state.tasks.find((item) => item.id === id);
+      if (localTask) {
+        localTask.exports = {
+          ...(localTask.exports || {}),
+          markdownPath: exportInfo.markdownPath || (localTask.exports && localTask.exports.markdownPath) || '',
+          pdfPath: exportInfo.pdfPath || (localTask.exports && localTask.exports.pdfPath) || '',
+          vaultPath: exportInfo.vaultPath,
+          exportDir: exportInfo.exportDir,
+          exportedAt: nowIso()
+        };
+        localTask.updatedAt = nowIso();
+        pushEvent(state, 'task.exported', `결과 저장: ${localTask.title}`, { agent: localTask.agent });
+        saveState(state);
+      } else {
+        pushEvent(state, 'task.exported', `회사 작업 결과 저장: ${listedTask.title}`, { agent: listedTask.agent });
+        saveState(state);
+      }
+      sendJson(res, 200, { ok: true, target, export: exportInfo, task: localTask ? enrichTask(localTask) : listedTask });
+    } catch (error) {
+      sendJson(res, 500, { ok: false, error: error.message || String(error) });
     }
     return true;
   }
@@ -2252,6 +2500,7 @@ async function handleApi(req, res, pathname, url) {
         ollamaBase: body.ollamaBase || config.ollamaBase,
         defaultModel: body.defaultModel || config.defaultModel,
         localBrainPath: expandHome(body.localBrainPath || config.localBrainPath),
+        obsidianVaultPath: resolveObsidianVaultPath(body.obsidianVaultPath || config.obsidianVaultPath, body.localBrainPath || config.localBrainPath),
         timeoutMs: Number(body.timeoutMs || config.timeoutMs),
         chatTimeoutMs: Number(body.chatTimeoutMs || config.chatTimeoutMs)
       };
