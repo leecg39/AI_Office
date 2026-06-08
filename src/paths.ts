@@ -45,7 +45,7 @@ export function _getBrainDir(): string {
         const raw = cfg.get<string>('localBrainPath', '') || '';
         const resolved = _resolvePathInput(raw);
         if (resolved) return resolved;
-    } catch { /* config unavailable in some hot paths — fall through */ }
+    } catch { console.warn('[paths] _getBrainDir config read failed'); }
     return path.join(os.homedir(), '.connect-ai-brain');
 }
 
@@ -55,7 +55,7 @@ export function _isBrainDirExplicitlySet(): boolean {
         const cfg = vscode.workspace.getConfiguration('connectAiLab');
         const raw = cfg.get<string>('localBrainPath', '') || '';
         return !!raw.trim();
-    } catch { return false; }
+    } catch { console.warn('[paths] _isBrainDirExplicitlySet config read failed'); return false; }
 }
 
 /** 회사 폴더 위치. settings.json `companyDir` 우선 (별도 위치). 없으면 `<brain>/_company/`. */
@@ -64,6 +64,6 @@ export function getCompanyDir(): string {
         const raw = vscode.workspace.getConfiguration('connectAiLab').get<string>('companyDir', '') || '';
         const resolved = _resolvePathInput(raw);
         if (resolved) return resolved;
-    } catch { /* config unavailable in some hot paths — fall through */ }
+    } catch { console.warn('[paths] getCompanyDir config read failed'); }
     return path.join(_getBrainDir(), COMPANY_SUBDIR);
 }
