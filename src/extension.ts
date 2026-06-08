@@ -8037,7 +8037,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
 
                 // Step 3: 완료 메시지
-                context.globalState.update('setupComplete', true);
+                await context.globalState.update('setupComplete', true);
                 
                 if (engineName) {
                     vscode.window.showInformationMessage(`🧠 자동 설정 완료! ${engineName} 감지됨 → 모델: ${modelName}`);
@@ -8046,7 +8046,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             } catch (e) {
                 // 마법사 실패해도 무시 (익스텐션 정상 작동)
-                context.globalState.update('setupComplete', true);
+                await context.globalState.update('setupComplete', true);
             }
         })();
     }
