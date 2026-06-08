@@ -24,12 +24,14 @@ Connect AI Lab은 VS Code/Cursor 확장 프로그램입니다. 로컬 LLM(Ollama
 npm install
 npm run compile
 npm test
+npm run qa:all
 npm run web
 npm run package:vsix
 ```
 
 - `npm run compile`: `src/extension.ts`를 `out/extension.js`로 번들합니다.
 - `npm test`: 현재는 컴파일 검증을 표준 테스트 진입점으로 사용합니다.
+- `npm run qa:all`: 임시 standalone 웹 서버를 띄운 뒤 `web:check`, `npm test`, `web:e2e`, `package:vsix`, `package:qa`를 한 번에 실행합니다. `CONNECT_AI_QA_BASE_URL`을 지정하면 기존 서버를 대상으로 실행합니다.
 - `npm run web`: VS Code 확장 호스트 없이 `http://127.0.0.1:8788`에서 웹 앱을 실행합니다.
 - `npm run package:vsix`: 컴파일 후 VSIX 패키지를 만듭니다.
 - VS Code에서 직접 실행할 때는 `.vscode/launch.json`의 `Run Extension` 구성을 사용합니다.
@@ -45,4 +47,4 @@ npm run package:vsix
 
 ## 완료 기준
 
-코드 변경 후 최소 `npm test`를 통과시킵니다. standalone 웹 앱 변경이면 `npm run web:check`와 실제 `http://127.0.0.1:8788` 접속을 확인합니다. 패키징 또는 확장 설치 흐름을 건드렸다면 `npm run package:vsix`까지 확인합니다. UI/webview 변경이면 가능하면 Extension Host에서 실제 사이드바 렌더링까지 확인합니다.
+코드 변경 후 최소 `npm test`를 통과시킵니다. standalone 웹 앱 변경이면 `npm run web:check`와 실제 `http://127.0.0.1:8788` 접속을 확인합니다. 패키징 또는 확장 설치 흐름을 건드렸다면 `npm run package:vsix`와 `npm run package:qa`까지 확인합니다. 오토 리서치, export, provider, 패키징을 함께 건드렸다면 `npm run qa:all`을 완료 기준으로 사용합니다. UI/webview 변경이면 가능하면 Extension Host에서 실제 사이드바 렌더링까지 확인합니다.

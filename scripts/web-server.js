@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('net');
+const dns = require('dns');
+const dnsPromises = dns.promises;
 const { execFile } = require('child_process');
 const { createHash, randomBytes, randomUUID } = require('crypto');
 const axios = require('axios');
@@ -23,9 +27,25 @@ const PORT = Number(process.env.CONNECT_AI_WEB_PORT || process.env.PORT || 8788)
 const MAX_BODY = 2 * 1024 * 1024;
 const BRAIN_CACHE_TTL_MS = 10 * 1000;
 const MAX_TASK_RUN_TIMEOUT_MS = 60000;
+const RESEARCH_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.CONNECT_AI_RESEARCH_TIMEOUT_MS) || 12000, 30000));
+const RESEARCH_USER_AGENT = 'ConnectAIResearch/1.0 (+https://github.com/wonseokjung/connect-ai)';
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 const ZAI_API_BASE = process.env.ZAI_API_BASE || 'https://api.z.ai/api/coding/paas/v4';
 const MOONSHOT_API_BASE = process.env.MOONSHOT_API_BASE || 'https://api.moonshot.ai/v1';
+const XAI_API_BASE = process.env.XAI_API_BASE || 'https://api.x.ai/v1';
+const GROK_PROXY_BASE = String(process.env.CONNECT_AI_GROK_PROXY_URL || 'http://127.0.0.1:8317/v1').replace(/\/+$/, '');
+const GROK_PROXY_MODEL = String(process.env.CONNECT_AI_GROK_PROXY_MODEL || 'grok-4.3').trim();
+const GROK_PROXY = {
+  id: 'cliproxyapi',
+  name: 'Grok OAuth Proxy',
+  base: GROK_PROXY_BASE,
+  model: GROK_PROXY_MODEL,
+  installCommand: 'brew install cliproxyapi',
+  loginCommand: 'cliproxyapi --xai-login',
+  serviceCommand: 'brew services start cliproxyapi',
+  docsUrl: 'https://help.router-for.me/configuration/provider/xai',
+  repoUrl: 'https://github.com/router-for-me/CLIProxyAPI'
+};
 const CHATGPT_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const CHATMOCK_OPENAI_CLIENT_ID = process.env.CONNECT_AI_CHATMOCK_CLIENT_ID
   || process.env.CHATGPT_LOCAL_CLIENT_ID
@@ -61,12 +81,24 @@ const PROVIDERS = {
   moonshot: {
     id: 'moonshot',
     name: 'Kimi 2.6',
+    hidden: true,
     apiKeyEnv: 'MOONSHOT_API_KEY',
     accountUrl: 'https://platform.kimi.ai/console/api-keys',
     keyUrl: 'https://platform.kimi.ai/console/api-keys',
     billingUrl: 'https://platform.kimi.ai/console/billing',
     docsUrl: 'https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart',
     accountAuthMessage: 'Kimi 2.6은 Moonshot/Kimi API Key로 연결됩니다. API Key 페이지에서 키 상태를 확인해 주세요.'
+  },
+  xai: {
+    id: 'xai',
+    name: 'Grok 4.3',
+    hidden: true,
+    apiKeyEnv: 'XAI_API_KEY',
+    accountUrl: 'https://console.x.ai/team/default/api-keys',
+    keyUrl: 'https://console.x.ai/team/default/api-keys',
+    billingUrl: 'https://console.x.ai/',
+    docsUrl: 'https://docs.x.ai/docs/api-reference#chat-completions',
+    accountAuthMessage: 'X Premium 구독과 xAI API는 별개입니다. xAI 콘솔에서 xai-로 시작하는 API Key를 발급해 연결해 주세요.'
   }
 };
 const PAID_MODELS = [
@@ -92,6 +124,14 @@ const PAID_MODELS = [
     label: 'Kimi 2.6 · Moonshot API (kimi-k2.6)',
     paid: true,
     contextLength: 256000
+  },
+  {
+    id: 'xai:grok-4.3',
+    provider: 'xai',
+    model: 'grok-4.3',
+    label: 'Grok 4.3 · xAI API (grok-4.3)',
+    paid: true,
+    contextLength: 1000000
   }
 ];
 const OPENAI_CHATMOCK_MODEL_FALLBACKS = {
@@ -154,7 +194,7 @@ const AGENTS = [
     accent: '#22d3ee',
     specialty: '코드 작성, 디버깅, API 통합, 자동화',
     tagline: '읽고, 짜고, 검증하는 개발 담당입니다',
-    avatar: resolveAgentImage('코다리.png')
+    avatar: resolveAgentImage('codari.png')
   },
   {
     id: 'business',
@@ -164,7 +204,7 @@ const AGENTS = [
     accent: '#f5c518',
     specialty: '수익화, 가격 전략, 시장 분석',
     tagline: '비즈니스 판단과 KPI를 같이 봅니다',
-    avatar: resolveAgentImage('현빈.jpeg')
+    avatar: resolveAgentImage('hyunbin.jpeg')
   },
   {
     id: 'secretary',
@@ -174,7 +214,7 @@ const AGENTS = [
     accent: '#84cc16',
     specialty: '일정, 할 일, 보고, 알림',
     tagline: '오늘 해야 할 일을 정리하고 챙깁니다',
-    avatar: resolveAgentImage('영숙에이전트비서.jpeg')
+    avatar: resolveAgentImage('youngsook_secretary.jpeg')
   },
   {
     id: 'editor',
@@ -229,6 +269,7 @@ const DEFAULT_STATE = {
 
 const brainCache = new Map();
 const oauthFlows = new Map();
+const taskRunQueue = new Map();
 let chatMockCallbackServer = null;
 
 function expandHome(input) {
@@ -307,6 +348,7 @@ function providerApiKeyLooksValid(provider, apiKey) {
   const key = String(apiKey || '').trim();
   if (!key) return false;
   if (provider === 'moonshot') return /^sk-[A-Za-z0-9_-]{20,}$/.test(key);
+  if (provider === 'xai') return /^xai-[A-Za-z0-9_-]{8,}$/.test(key);
   return true;
 }
 
@@ -352,7 +394,7 @@ function providerCredential(provider) {
 }
 
 function getProviderSummaries() {
-  return Object.values(PROVIDERS).map((provider) => {
+  return Object.values(PROVIDERS).filter((provider) => !provider.hidden).map((provider) => {
     const credential = providerCredential(provider.id);
     const oauth = providerOAuthConfig(provider.id);
     return {
@@ -397,6 +439,28 @@ function readVsCodeSettings() {
   return {};
 }
 
+function isGrokProxyBase(base) {
+  const current = String(base || '').replace(/\/+$/, '');
+  return lmBase(current) === lmBase(GROK_PROXY.base);
+}
+
+function hiddenProviderDefaultFallback(ollamaBase) {
+  return isGrokProxyBase(ollamaBase) ? modelRef('local', GROK_PROXY_MODEL) : '';
+}
+
+function normalizeDefaultModelForConfig(ollamaBase, defaultModel) {
+  const current = String(defaultModel || '').trim();
+  const provider = current.match(/^([A-Za-z0-9_-]+):/)?.[1] || '';
+  if (provider && (providerConfig(provider) || {}).hidden) {
+    return hiddenProviderDefaultFallback(ollamaBase);
+  }
+  const model = current.replace(/^(local|xai):/, '');
+  if (isGrokProxyBase(ollamaBase) && (!current || (/grok/i.test(model) && isNonChatModel(model)))) {
+    return modelRef('local', GROK_PROXY_MODEL);
+  }
+  return current;
+}
+
 function getConfig() {
   const local = readJson(LOCAL_CONFIG);
   const settings = readVsCodeSettings();
@@ -408,6 +472,7 @@ function getConfig() {
     || local.defaultModel
     || settings['connectAiLab.defaultModel']
     || '';
+  const normalizedDefaultModel = normalizeDefaultModelForConfig(ollamaBase, defaultModel);
   const localBrainPath = expandHome(process.env.CONNECT_AI_BRAIN
     || local.localBrainPath
     || settings['connectAiLab.localBrainPath']
@@ -424,14 +489,24 @@ function getConfig() {
   const chatTimeoutMs = Number(process.env.CONNECT_AI_CHAT_TIMEOUT_MS
     || local.chatTimeoutMs
     || Math.min(timeoutMs || 300000, 45000));
+  const llmApiKey = process.env.CONNECT_AI_LLM_API_KEY
+    || local.llmApiKey
+    || local.localLlmApiKey
+    || '';
   return {
     ollamaBase: String(ollamaBase).replace(/\/+$/, ''),
-    defaultModel: String(defaultModel || ''),
+    defaultModel: normalizedDefaultModel,
     localBrainPath,
     obsidianVaultPath,
+    llmApiKey: cleanSecret(llmApiKey, 3000),
     timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 300000,
     chatTimeoutMs: Number.isFinite(chatTimeoutMs) ? chatTimeoutMs : 45000
   };
+}
+
+function publicConfig(config) {
+  const { llmApiKey, localLlmApiKey, ...safeConfig } = config || {};
+  return safeConfig;
 }
 
 function loadState() {
@@ -1010,6 +1085,35 @@ function runOpenCommand(args) {
   });
 }
 
+function execFileText(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, {
+      timeout: options.timeout || 3000,
+      maxBuffer: options.maxBuffer || 1024 * 1024
+    }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(String(stdout || '').trim());
+    });
+  });
+}
+
+async function findCommand(names) {
+  for (const name of names) {
+    try {
+      const resolved = path.isAbsolute(name)
+        ? (fs.existsSync(name) ? name : '')
+        : await execFileText('/usr/bin/which', [name], { timeout: 1500 });
+      if (resolved) return resolved;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return '';
+}
+
 async function openResultPath(config, rawPath, action) {
   const requested = expandHome(String(rawPath || '').trim());
   if (!requested) throw new Error('PATH_REQUIRED');
@@ -1214,6 +1318,980 @@ function termsFromMessage(message) {
     .slice(0, 12);
 }
 
+function decodeHtml(value = '') {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function stripHtml(value = '') {
+  return decodeHtml(String(value || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .replace(/\s+(-(?=[A-Za-z0-9]))/g, '$1')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .trim();
+}
+
+function safeDecodeUri(value) {
+  try {
+    return decodeURIComponent(String(value || ''));
+  } catch {
+    return String(value || '');
+  }
+}
+
+function repairUrlProtocol(value) {
+  return String(value || '').replace(/^(https?):\/(?!\/)/i, '$1://');
+}
+
+function embeddedMarkdownUrl(value) {
+  const candidates = [
+    String(value || ''),
+    decodeHtml(value),
+    safeDecodeUri(value),
+    safeDecodeUri(decodeHtml(value))
+  ];
+  for (const candidate of candidates) {
+    const match = String(candidate || '').match(/\]\((https?:\/{1,2}[^\s)]+)/i);
+    if (match) return repairUrlProtocol(match[1]);
+  }
+  return '';
+}
+
+function reutersCanonicalUrl(url) {
+  if (!/reuters/i.test(url.hostname) || !/\.arcpublishing\.com$/i.test(url.hostname)) return '';
+  const cleanPath = safeDecodeUri(url.pathname).split(/\]\(/)[0].replace(/\/+$/, '/');
+  if (!/^\/[a-z0-9-]+\/.+-\d{4}-\d{2}-\d{2}\/?$/i.test(cleanPath)) return '';
+  try {
+    return new URL(cleanPath, 'https://www.reuters.com').href;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeResearchUrl(raw) {
+  const value = decodeHtml(raw).trim();
+  try {
+    const url = new URL(embeddedMarkdownUrl(value) || repairUrlProtocol(value), 'https://duckduckgo.com');
+    const redirected = url.searchParams.get('uddg');
+    const finalCandidate = redirected
+      ? (embeddedMarkdownUrl(redirected) || repairUrlProtocol(redirected))
+      : (embeddedMarkdownUrl(url.href) || url.href);
+    const finalUrl = new URL(finalCandidate);
+    if (!['http:', 'https:'].includes(finalUrl.protocol)) return '';
+    const reutersUrl = reutersCanonicalUrl(finalUrl);
+    if (reutersUrl) return reutersUrl;
+    return finalUrl.href;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeResearchHostname(hostname) {
+  return String(hostname || '')
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+}
+
+function ipv4FromMappedIpv6(host) {
+  if (!host.startsWith('::ffff:')) return '';
+  const tail = host.slice('::ffff:'.length);
+  if (net.isIP(tail) === 4) return tail;
+  const parts = tail.split(':');
+  if (parts.length !== 2) return '';
+  const high = parseInt(parts[0], 16);
+  const low = parseInt(parts[1], 16);
+  if (!Number.isFinite(high) || !Number.isFinite(low) || high < 0 || high > 0xffff || low < 0 || low > 0xffff) return '';
+  return `${(high >> 8) & 255}.${high & 255}.${(low >> 8) & 255}.${low & 255}`;
+}
+
+function isPrivateResearchHost(hostname) {
+  const host = normalizeResearchHostname(hostname);
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  const mappedIpv4 = ipv4FromMappedIpv6(host);
+  if (mappedIpv4) return isPrivateResearchHost(mappedIpv4);
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4) {
+    const parts = host.split('.').map((part) => Number(part));
+    return parts[0] === 0
+      || parts[0] === 10
+      || parts[0] === 127
+      || (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)
+      || (parts[0] === 169 && parts[1] === 254)
+      || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+      || (parts[0] === 192 && parts[1] === 0 && parts[2] === 0)
+      || (parts[0] === 192 && parts[1] === 0 && parts[2] === 2)
+      || (parts[0] === 192 && parts[1] === 168)
+      || (parts[0] === 198 && (parts[1] === 18 || parts[1] === 19))
+      || (parts[0] === 198 && parts[1] === 51 && parts[2] === 100)
+      || (parts[0] === 203 && parts[1] === 0 && parts[2] === 113)
+      || parts[0] >= 224;
+  }
+  if (ipVersion === 6) {
+    return host === '::'
+      || host === '::1'
+      || host.startsWith('fc')
+      || host.startsWith('fd')
+      || host.startsWith('fe80')
+      || host.startsWith('ff')
+      || host.startsWith('2001:db8');
+  }
+  return false;
+}
+
+async function isResolvedSafeResearchHost(hostname) {
+  const host = normalizeResearchHostname(hostname);
+  if (isPrivateResearchHost(host)) return false;
+  if (net.isIP(host)) return true;
+  try {
+    const records = await dnsPromises.lookup(host, { all: true, verbatim: true });
+    return records.length > 0 && records.every((record) => !isPrivateResearchHost(record.address));
+  } catch {
+    return false;
+  }
+}
+
+function researchSafeLookup(hostname, options, callback) {
+  const host = normalizeResearchHostname(hostname);
+  if (isPrivateResearchHost(host)) {
+    callback(new Error('RESEARCH_PRIVATE_HOST_BLOCKED'));
+    return;
+  }
+  dns.lookup(host, options, (error, address, family) => {
+    if (error) {
+      callback(error);
+      return;
+    }
+    const records = Array.isArray(address) ? address : [{ address, family }];
+    if (records.some((record) => isPrivateResearchHost(record.address || record))) {
+      callback(new Error('RESEARCH_PRIVATE_HOST_BLOCKED'));
+      return;
+    }
+    callback(null, address, family);
+  });
+}
+
+const RESEARCH_HTTP_AGENT = new http.Agent({ lookup: researchSafeLookup });
+const RESEARCH_HTTPS_AGENT = new https.Agent({ lookup: researchSafeLookup });
+
+function isSafeResearchUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !isPrivateResearchHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function isFetchSafeResearchUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && await isResolvedSafeResearchHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function filterSafeResearchResults(results) {
+  const safe = [];
+  for (const item of Array.isArray(results) ? results : []) {
+    if (item && item.url && await isFetchSafeResearchUrl(item.url)) safe.push(item);
+  }
+  return safe;
+}
+
+function extractDuckDuckGoResults(html, limit = 5) {
+  const blocks = String(html || '').split(/<div[^>]+class="[^"]*\bresult\b[^"]*"[^>]*>/i).slice(1);
+  const results = [];
+  for (const block of blocks) {
+    const anchor = block.match(/<a[^>]+class="[^"]*\bresult__a\b[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    if (!anchor) continue;
+    const url = normalizeResearchUrl(anchor[1]);
+    if (!url || !isSafeResearchUrl(url)) continue;
+    const title = stripHtml(anchor[2]);
+    if (!title) continue;
+    const snippetMatch = block.match(/<(?:a|div)[^>]+class="[^"]*\bresult__snippet\b[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div)>/i);
+    const snippet = snippetMatch ? stripHtml(snippetMatch[1]) : '';
+    if (results.some((item) => item.url === url)) continue;
+    results.push({ title: cleanText(title, 240), url, snippet: cleanText(snippet, 600) });
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+function mockResearchResults(query, mode = 'ok') {
+  if (mode === 'empty') {
+    return {
+      ok: true,
+      query,
+      mode: 'mock',
+      status: 'empty',
+      searchedAt: nowIso(),
+      results: [],
+      sources: [],
+      count: 0,
+      error: '검색 결과가 없습니다.'
+    };
+  }
+  if (mode === 'error') {
+    return {
+      ok: true,
+      query,
+      mode: 'mock',
+      status: 'error',
+      searchedAt: nowIso(),
+      results: [],
+      sources: [],
+      count: 0,
+      error: 'QA mock research upstream error'
+    };
+  }
+  return {
+    ok: true,
+    query,
+    mode: 'mock',
+    status: 'ok',
+    searchedAt: nowIso(),
+    results: [
+      {
+        title: 'QA Auto Research Fixture',
+        url: 'https://example.com/connect-ai/qa-auto-research',
+        snippet: 'Deterministic source used by Connect AI e2e to verify automatic research grounding.',
+        excerpt: 'QA fixture excerpt: automatic research collected a source, stored a citation, and passed it to task execution.'
+      },
+      {
+        title: 'Connect AI Research Notes',
+        url: 'https://example.com/connect-ai/research-notes',
+        snippet: 'A second deterministic source for citation rendering and export coverage.',
+        excerpt: 'Research notes fixture: result cards should include title, URL, snippet, and optional excerpt.'
+      }
+    ],
+    sources: [
+      'https://example.com/connect-ai/qa-auto-research',
+      'https://example.com/connect-ai/research-notes'
+    ],
+    count: 2,
+    error: ''
+  };
+}
+
+function mockXResearchResults(query) {
+  return {
+    ok: true,
+    query,
+    mode: 'x-grok-oauth-proxy-mock',
+    status: 'ok',
+    searchedAt: nowIso(),
+    count: 1,
+    sources: ['https://x.com/search?q=QA_AUTO_RESEARCH_FIXTURE&src=typed_query&f=live'],
+    results: [{
+      title: 'X Search Fixture',
+      url: 'https://x.com/search?q=QA_AUTO_RESEARCH_FIXTURE&src=typed_query&f=live',
+      snippet: 'Grok OAuth subscription research fixture for X search.'
+    }],
+    error: ''
+  };
+}
+
+function mockThreadsResearchResults(query) {
+  return {
+    ok: true,
+    query,
+    mode: 'threads-web-search-mock',
+    status: 'ok',
+    searchedAt: nowIso(),
+    count: 1,
+    sources: ['https://www.threads.net/search?q=QA_AUTO_RESEARCH_FIXTURE'],
+    results: [{
+      title: 'Threads Search Fixture',
+      url: 'https://www.threads.net/search?q=QA_AUTO_RESEARCH_FIXTURE',
+      snippet: 'Threads web search fixture for social research.'
+    }],
+    error: ''
+  };
+}
+
+function mockYouTubeResearchResults(query) {
+  return {
+    ok: true,
+    query,
+    mode: 'youtube-web-search-mock',
+    status: 'ok',
+    searchedAt: nowIso(),
+    count: 1,
+    sources: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+    results: [{
+      title: 'YouTube Search Fixture',
+      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      snippet: '채널: Connect AI QA · 게시: 2026. 06. 07. · 조회수: 123,456회 · YouTube web search fixture.'
+    }],
+    error: ''
+  };
+}
+
+async function searchWeb(query, limit = 5) {
+  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const response = await axios.get(url, {
+    timeout: Math.min(RESEARCH_TIMEOUT_MS, 15000),
+    responseType: 'text',
+    httpAgent: RESEARCH_HTTP_AGENT,
+    httpsAgent: RESEARCH_HTTPS_AGENT,
+    proxy: false,
+    maxContentLength: 1024 * 1024,
+    headers: {
+      'User-Agent': RESEARCH_USER_AGENT,
+      Accept: 'text/html,application/xhtml+xml'
+    }
+  });
+  return extractDuckDuckGoResults(response.data, limit);
+}
+
+async function fetchResearchPage(url) {
+  if (!await isFetchSafeResearchUrl(url)) return '';
+  try {
+    const response = await axios.get(url, {
+      timeout: Math.min(RESEARCH_TIMEOUT_MS, 12000),
+      responseType: 'text',
+      maxRedirects: 0,
+      httpAgent: RESEARCH_HTTP_AGENT,
+      httpsAgent: RESEARCH_HTTPS_AGENT,
+      proxy: false,
+      maxContentLength: 1024 * 1024,
+      validateStatus: (status) => status >= 200 && status < 400,
+      headers: {
+        'User-Agent': RESEARCH_USER_AGENT,
+        Accept: 'text/html,text/plain'
+      }
+    });
+    return cleanText(stripHtml(response.data), 1400);
+  } catch {
+    return '';
+  }
+}
+
+function xSearchUrl(query) {
+  const url = new URL('https://x.com/search');
+  url.searchParams.set('q', query);
+  url.searchParams.set('src', 'typed_query');
+  url.searchParams.set('f', 'live');
+  return url.href;
+}
+
+function threadsSearchUrl(query) {
+  const url = new URL('https://www.threads.net/search');
+  url.searchParams.set('q', query);
+  return url.href;
+}
+
+function youtubeSearchUrl(query) {
+  const url = new URL('https://www.youtube.com/results');
+  url.searchParams.set('search_query', query);
+  return url.href;
+}
+
+function grokProxyResearchHelp(status) {
+  if (!status.installed) {
+    return `${GROK_PROXY.installCommand} 후 ${GROK_PROXY.loginCommand}를 실행해 Grok Build OAuth 로그인을 완료해 주세요.`;
+  }
+  if (!status.running) {
+    return `${GROK_PROXY.loginCommand}로 Grok Build OAuth 로그인을 완료한 뒤 ${GROK_PROXY.serviceCommand} 또는 cliproxyapi 서버를 실행해 주세요.`;
+  }
+  return 'Grok OAuth Proxy 인증 상태를 확인해 주세요.';
+}
+
+function parseJsonObject(text) {
+  const raw = String(text || '').trim();
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : raw;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function normalizeXResearchResult(item) {
+  const url = normalizeResearchUrl(item && (item.url || item.link || item.source));
+  if (!url || !isSafeResearchUrl(url)) return null;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host !== 'x.com' && host !== 'twitter.com') return null;
+  } catch {
+    return null;
+  }
+  const title = cleanText(item.title || item.author || 'X Search result', 240);
+  const snippetParts = [
+    item.author ? `작성자: ${item.author}` : '',
+    item.publishedAt ? `시간: ${item.publishedAt}` : '',
+    item.snippet || item.summary || item.text || ''
+  ].filter(Boolean);
+  return {
+    title,
+    url,
+    snippet: cleanText(snippetParts.join(' · '), 700)
+  };
+}
+
+async function runXSubscriptionResearch(query, options = {}, config = getConfig()) {
+  const cleanQuery = cleanText(query, 300);
+  if (!cleanQuery) throw new Error('QUERY_REQUIRED');
+  if (options.mock || /QA_AUTO_RESEARCH_(FIXTURE|EMPTY|ERROR)/i.test(cleanQuery)) {
+    return mockXResearchResults(cleanQuery);
+  }
+
+  const limit = Math.max(1, Math.min(Number(options.limit) || 4, 10));
+  const report = {
+    ok: true,
+    query: cleanQuery,
+    mode: 'x-grok-oauth-proxy',
+    status: 'pending',
+    searchedAt: nowIso(),
+    results: [],
+    sources: [],
+    count: 0,
+    error: ''
+  };
+  const fallbackSearch = {
+    title: `X Search: ${cleanQuery}`,
+    url: xSearchUrl(cleanQuery),
+    snippet: 'X 검색 페이지를 직접 열어 구독 계정으로 확인할 수 있습니다.'
+  };
+
+  const status = await getGrokProxyStatus(config);
+  if (!status.running) {
+    report.status = 'error';
+    report.error = grokProxyResearchHelp(status);
+    report.results = [{
+      title: 'Grok Build OAuth Proxy 연결 안내',
+      url: status.docsUrl || GROK_PROXY.docsUrl,
+      snippet: report.error
+    }, fallbackSearch].filter((item) => item.url && isSafeResearchUrl(item.url));
+    report.sources = report.results.map((item) => item.url);
+    report.count = report.results.length;
+    return report;
+  }
+
+  try {
+    const model = preferredGrokChatModel(status.models, status.model || GROK_PROXY.model);
+    const response = await axios.post(`${GROK_PROXY.base}/chat/completions`, {
+      model,
+      temperature: 0.2,
+      max_tokens: 1200,
+      stream: false,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are Connect AI X Search.',
+            'Use the authenticated Grok/X subscription session to search X/Twitter for the user query.',
+            'Return strict JSON only: {"status":"ok|empty|error","results":[{"title":"","url":"","snippet":"","author":"","publishedAt":""}],"error":""}.',
+            'Every result URL must be an exact https://x.com/... or https://twitter.com/... URL.',
+            'Do not invent post URLs. If exact URLs are unavailable, return an empty results array and explain in error.',
+            'Write snippets in Korean.'
+          ].join(' ')
+        },
+        {
+          role: 'user',
+          content: `X에서 다음 내용을 검색해 상위 ${limit}개 결과를 JSON으로 반환해줘.\n검색어: ${cleanQuery}`
+        }
+      ]
+    }, {
+      timeout: Math.min(config.chatTimeoutMs || config.timeoutMs || 45000, 45000),
+      headers: {
+        ...localLlmHeaders(config),
+        'Content-Type': 'application/json'
+      }
+    });
+    const text = extractModelText(response.data);
+    const parsed = parseJsonObject(text) || {};
+    const results = (Array.isArray(parsed.results) ? parsed.results : [])
+      .map(normalizeXResearchResult)
+      .filter(Boolean)
+      .slice(0, limit);
+    report.results = results.length ? await filterSafeResearchResults(results) : [fallbackSearch];
+    report.sources = Array.from(new Set(report.results.map((item) => item.url).filter(Boolean)));
+    report.count = report.results.length;
+    report.status = results.length ? 'ok' : (parsed.status === 'error' ? 'error' : 'empty');
+    report.error = cleanText(parsed.error || (!results.length ? 'Grok이 정확한 X 게시물 링크를 반환하지 않아 X 검색 링크를 제공했습니다.' : ''), 500);
+  } catch (error) {
+    report.status = 'error';
+    report.error = modelErrorMessage(error);
+    report.results = [fallbackSearch];
+    report.sources = [fallbackSearch.url];
+    report.count = 1;
+  }
+  return report;
+}
+
+function isThreadsUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+    return host === 'threads.net';
+  } catch {
+    return false;
+  }
+}
+
+function extractResearchUrls(text) {
+  const matches = String(text || '').match(/https?:\/\/[^\s<>"')\]]+/gi) || [];
+  return Array.from(new Set(matches
+    .map((raw) => normalizeResearchUrl(raw.replace(/[.,;:!?]+$/g, '')))
+    .filter(Boolean)));
+}
+
+async function runThreadsResearch(query, options = {}) {
+  const cleanQuery = cleanText(query, 300);
+  if (!cleanQuery) throw new Error('QUERY_REQUIRED');
+  if (options.mock || /QA_AUTO_RESEARCH_(FIXTURE|EMPTY|ERROR)/i.test(cleanQuery)) {
+    return mockThreadsResearchResults(cleanQuery);
+  }
+
+  const limit = Math.max(1, Math.min(Number(options.limit) || 4, 10));
+  const fetchPages = options.fetchPages !== false;
+  const fallbackSearch = {
+    title: `Threads Search: ${cleanQuery}`,
+    url: threadsSearchUrl(cleanQuery),
+    snippet: 'Threads 검색 페이지를 직접 열어 확인할 수 있습니다.'
+  };
+  const report = {
+    ok: true,
+    query: cleanQuery,
+    mode: 'threads-web-search',
+    status: 'pending',
+    searchedAt: nowIso(),
+    results: [],
+    sources: [],
+    count: 0,
+    error: ''
+  };
+
+  try {
+    const directResults = extractResearchUrls(cleanQuery)
+      .filter(isThreadsUrl)
+      .slice(0, limit)
+      .map((url) => ({ title: `Threads: ${url}`, url, snippet: '사용자가 제공한 Threads 링크입니다.' }));
+    const rawResults = directResults.length ? [] : await searchWeb(`site:threads.net ${cleanQuery}`, limit + 2);
+    report.results = directResults.length ? directResults : (await filterSafeResearchResults(rawResults))
+      .filter((item) => isThreadsUrl(item.url))
+      .slice(0, limit);
+    if (fetchPages) {
+      for (const item of report.results.slice(0, 3)) {
+        item.excerpt = await fetchResearchPage(item.url);
+      }
+    }
+    if (!report.results.length) {
+      report.results = [fallbackSearch];
+      report.error = '검색 결과에서 정확한 Threads 게시물 링크를 찾지 못해 Threads 검색 링크를 제공합니다.';
+    }
+    report.sources = Array.from(new Set(report.results.map((item) => item.url).filter(Boolean)));
+    report.count = report.results.length;
+    report.status = report.error ? 'empty' : 'ok';
+  } catch (error) {
+    report.status = 'error';
+    report.error = error.message || String(error);
+    report.results = [fallbackSearch];
+    report.sources = [fallbackSearch.url];
+    report.count = 1;
+  }
+  return report;
+}
+
+function isYouTubeUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+    return host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be';
+  } catch {
+    return false;
+  }
+}
+
+function youtubeVideoIdFromUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host === 'youtu.be') return url.pathname.split('/').filter(Boolean)[0] || '';
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (url.pathname === '/watch') return url.searchParams.get('v') || '';
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (['shorts', 'live', 'embed'].includes(parts[0])) return parts[1] || '';
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function youtubeWatchUrl(videoId) {
+  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+}
+
+function youtubeText(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value.simpleText === 'string') return value.simpleText;
+  if (Array.isArray(value.runs)) return value.runs.map((run) => run.text || '').join('');
+  if (Array.isArray(value)) return value.map(youtubeText).filter(Boolean).join(' ');
+  return '';
+}
+
+function parseViewCount(value) {
+  const text = String(value || '').replace(/,/g, '').toLowerCase();
+  const ko = text.match(/조회수\s*([\d.]+)\s*(천|만|억)?/);
+  if (ko) {
+    const base = Number(ko[1]);
+    const unit = ko[2] === '억' ? 100000000 : ko[2] === '만' ? 10000 : ko[2] === '천' ? 1000 : 1;
+    return Number.isFinite(base) ? Math.round(base * unit) : 0;
+  }
+  const en = text.match(/([\d.]+)\s*([kmb])?\s*views?/i);
+  if (en) {
+    const base = Number(en[1]);
+    const unit = en[2] === 'b' ? 1000000000 : en[2] === 'm' ? 1000000 : en[2] === 'k' ? 1000 : 1;
+    return Number.isFinite(base) ? Math.round(base * unit) : 0;
+  }
+  return /no views?|조회수\s*없음/.test(text) ? 0 : 0;
+}
+
+function extractBalancedJson(text, startIndex) {
+  const start = String(text || '').indexOf('{', startIndex);
+  if (start < 0) return '';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+  return '';
+}
+
+function parseYtInitialData(html) {
+  const text = String(html || '');
+  const markerIndex = text.search(/(?:var\s+)?ytInitialData\s*=/);
+  if (markerIndex < 0) return null;
+  const json = extractBalancedJson(text, markerIndex);
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function collectYouTubeRenderers(node, out = []) {
+  if (!node || out.length > 80) return out;
+  if (Array.isArray(node)) {
+    node.forEach((item) => collectYouTubeRenderers(item, out));
+    return out;
+  }
+  if (typeof node !== 'object') return out;
+  if (node.videoRenderer) out.push(node.videoRenderer);
+  Object.values(node).forEach((value) => collectYouTubeRenderers(value, out));
+  return out;
+}
+
+function normalizeYouTubeRenderer(renderer) {
+  const videoId = renderer && renderer.videoId ? String(renderer.videoId) : '';
+  if (!videoId) return null;
+  const title = cleanText(youtubeText(renderer.title) || youtubeText(renderer.headline) || 'YouTube video', 240);
+  const channel = cleanText(youtubeText(renderer.ownerText) || youtubeText(renderer.longBylineText) || youtubeText(renderer.shortBylineText), 160);
+  const published = cleanText(youtubeText(renderer.publishedTimeText), 120);
+  const viewsText = cleanText(youtubeText(renderer.viewCountText) || youtubeText(renderer.shortViewCountText), 120);
+  const description = cleanText(youtubeText(renderer.detailedMetadataSnippets) || youtubeText(renderer.descriptionSnippet), 500);
+  const viewCount = parseViewCount(viewsText);
+  const snippet = [
+    channel ? `채널: ${channel}` : '',
+    published ? `게시: ${published}` : '',
+    viewsText,
+    description
+  ].filter(Boolean).join(' · ');
+  return {
+    title,
+    url: youtubeWatchUrl(videoId),
+    snippet: cleanText(snippet, 700),
+    viewCount
+  };
+}
+
+function extractYouTubeResults(html, limit = 10) {
+  const initialData = parseYtInitialData(html);
+  const renderers = collectYouTubeRenderers(initialData);
+  const results = [];
+  const seen = new Set();
+  for (const renderer of renderers) {
+    const item = normalizeYouTubeRenderer(renderer);
+    if (!item || seen.has(item.url)) continue;
+    seen.add(item.url);
+    results.push(item);
+    if (results.length >= Math.max(limit, 20)) break;
+  }
+  return results.slice(0, Math.max(limit, 1));
+}
+
+async function searchYouTube(query, limit = 10) {
+  const url = youtubeSearchUrl(query);
+  const response = await axios.get(url, {
+    timeout: Math.min(RESEARCH_TIMEOUT_MS, 15000),
+    responseType: 'text',
+    httpAgent: RESEARCH_HTTP_AGENT,
+    httpsAgent: RESEARCH_HTTPS_AGENT,
+    proxy: false,
+    maxContentLength: 3 * 1024 * 1024,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml'
+    }
+  });
+  return extractYouTubeResults(response.data, limit);
+}
+
+function shouldSortYouTubeByViews(query) {
+  return /조회수|인기|높은\s*순|많은\s*순|view|popular|top/i.test(String(query || ''));
+}
+
+function youtubeSearchQueryFromText(query) {
+  const original = cleanText(query, 300);
+  const cleaned = cleanText(original
+    .replace(/https?:\/\/[^\s]+/gi, ' ')
+    .replace(/(?:^|\s)(?:유튜브|유투브)(?:에서도|에서|으로|로|의|를|도)?/gi, ' ')
+    .replace(/\b(?:youtube|yt)\b/gi, ' ')
+    .replace(/\d{1,2}\s*(?:개|가지|건|편|위|videos?|items?)?/gi, ' ')
+    .replace(/(?:조회수|인기|높은\s*순서?|높은\s*순|많은\s*순|순서|정렬|top|popular|views?)/gi, ' ')
+    .replace(/(?:찾아(?:와|서|줘)?|검색(?:해|해서|해줘)?|가져와서?|요약(?:해|해서|해줘)?|정리(?:해|해서|해줘)?|분석(?:해|해서|해줘)?)/g, ' '), 180);
+  return cleaned || original;
+}
+
+async function runYouTubeResearch(query, options = {}) {
+  const cleanQuery = cleanText(query, 300);
+  if (!cleanQuery) throw new Error('QUERY_REQUIRED');
+  if (options.mock || /QA_AUTO_RESEARCH_(FIXTURE|EMPTY|ERROR)/i.test(cleanQuery)) {
+    return mockYouTubeResearchResults(cleanQuery);
+  }
+
+  const limit = Math.max(1, Math.min(Number(options.limit) || 5, 10));
+  const searchQuery = youtubeSearchQueryFromText(cleanQuery);
+  const fallbackSearch = {
+    title: `YouTube Search: ${searchQuery}`,
+    url: youtubeSearchUrl(searchQuery),
+    snippet: 'YouTube 검색 페이지를 직접 열어 확인할 수 있습니다.'
+  };
+  const report = {
+    ok: true,
+    query: cleanQuery,
+    mode: 'youtube-web-search',
+    status: 'pending',
+    searchedAt: nowIso(),
+    results: [],
+    sources: [],
+    count: 0,
+    error: ''
+  };
+
+  try {
+    const directResults = extractResearchUrls(cleanQuery)
+      .filter(isYouTubeUrl)
+      .slice(0, limit)
+      .map((url) => ({ title: `YouTube: ${url}`, url, snippet: '사용자가 제공한 YouTube 링크입니다.', viewCount: 0 }));
+    let results = directResults.length ? directResults : await searchYouTube(searchQuery, Math.max(limit * 2, 10));
+    if (shouldSortYouTubeByViews(cleanQuery)) {
+      results = results.slice().sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
+    }
+    report.results = results.slice(0, limit);
+    if (!report.results.length) {
+      report.results = [fallbackSearch];
+      report.error = 'YouTube 검색 결과를 파싱하지 못해 YouTube 검색 링크를 제공합니다.';
+    }
+    report.sources = Array.from(new Set(report.results.map((item) => item.url).filter(Boolean)));
+    report.count = report.results.length;
+    report.status = report.error ? 'empty' : 'ok';
+  } catch (error) {
+    report.status = 'error';
+    report.error = error.message || String(error);
+    report.results = [fallbackSearch];
+    report.sources = [fallbackSearch.url];
+    report.count = 1;
+  }
+  return report;
+}
+
+async function runAutoResearch(query, options = {}) {
+  const cleanQuery = cleanText(query, 300);
+  if (!cleanQuery) throw new Error('QUERY_REQUIRED');
+  const source = cleanText(options.source || '', 30).toLowerCase();
+  if (source === 'x' || source === 'twitter') {
+    return runXSubscriptionResearch(cleanQuery, options, options.config || getConfig());
+  }
+  if (source === 'threads' || source === 'thread') {
+    return runThreadsResearch(cleanQuery, options);
+  }
+  if (source === 'youtube' || source === 'yt') {
+    return runYouTubeResearch(cleanQuery, options);
+  }
+  if (options.mock || /QA_AUTO_RESEARCH_(FIXTURE|EMPTY|ERROR)/i.test(cleanQuery)) {
+    const mockMode = options.mock === 'empty' || /QA_AUTO_RESEARCH_EMPTY/i.test(cleanQuery)
+      ? 'empty'
+      : options.mock === 'error' || /QA_AUTO_RESEARCH_ERROR/i.test(cleanQuery)
+        ? 'error'
+        : 'ok';
+    return mockResearchResults(cleanQuery, mockMode);
+  }
+  const limit = Math.max(1, Math.min(Number(options.limit) || 4, 10));
+  const fetchPages = options.fetchPages !== false;
+  const report = { ok: true, query: cleanQuery, mode: 'duckduckgo-html', status: 'pending', searchedAt: nowIso(), results: [], sources: [], count: 0, error: '' };
+  try {
+    report.results = await filterSafeResearchResults(await searchWeb(cleanQuery, limit));
+    if (fetchPages) {
+      for (const item of report.results.slice(0, 3)) {
+        item.excerpt = await fetchResearchPage(item.url);
+      }
+    }
+    report.sources = report.results.map((item) => item.url).filter(Boolean);
+    report.count = report.results.length;
+    report.status = report.results.length ? 'ok' : 'empty';
+    if (!report.results.length) report.error = '검색 결과가 없습니다.';
+  } catch (error) {
+    report.status = 'error';
+    report.error = error.message || String(error);
+  }
+  return report;
+}
+
+function taskNeedsAutoResearch(task) {
+  const text = `${task.title || ''}\n${task.description || ''}`.toLowerCase();
+  return task.agent === 'researcher'
+    || Boolean(researchSourceFromText(text))
+    || /리서치|조사|검색|뉴스|최근|오늘|현재|트렌드|자료|출처|근거|fact|research|news|web|source/.test(text);
+}
+
+function researchSourceFromText(text) {
+  const value = String(text || '');
+  if (/youtube\.com|youtu\.be|(?:^|\s)(?:유튜브|유투브)(?:에서|로|를|의|$)|\byoutube\b|\byt\b/i.test(value)) {
+    return 'youtube';
+  }
+  if (/threads\.net|메타\s*(?:쓰레드|스레드)|(?:^|\s)(?:쓰레드|스레드)(?:에서|로|를|의|$)|\bmeta\s+threads\b/i.test(value)) {
+    return 'threads';
+  }
+  if (/\b(?:twitter|x\.com)\b|(?:^|\s)X에서|트위터|엑스\s*검색|x\s*search/i.test(value)) {
+    return 'x';
+  }
+  return '';
+}
+
+function requestedResearchLimit(text, fallback = 4) {
+  const value = String(text || '');
+  const matches = [...value.matchAll(/(?:top\s*)?(\d{1,2})\s*(?:개|가지|건|편|위|videos?|items?)?/gi)]
+    .map((match) => Number(match[1]))
+    .filter((number) => Number.isFinite(number) && number > 0);
+  const requested = matches.length ? Math.max(...matches) : fallback;
+  return Math.max(1, Math.min(requested, 10));
+}
+
+async function researchForTask(task) {
+  if (!taskNeedsAutoResearch(task)) return null;
+  try {
+    const query = cleanText(`${task.title || ''} ${task.description || ''}`, 300);
+    const source = researchSourceFromText(query);
+    const report = await runAutoResearch(query, {
+      limit: requestedResearchLimit(query, 4),
+      fetchPages: true,
+      mock: /QA_AUTO_RESEARCH_FIXTURE/i.test(query),
+      source
+    });
+    return report.results.length ? report : null;
+  } catch {
+    return null;
+  }
+}
+
+async function researchForChat(message) {
+  const source = researchSourceFromText(message);
+  const needsResearch = Boolean(source)
+    || /리서치|조사|검색|뉴스|최근|오늘|현재|트렌드|자료|출처|근거|fact|research|news|web|source/.test(String(message || '').toLowerCase());
+  if (!needsResearch) return null;
+  try {
+    const query = cleanText(message, 300);
+    const report = await runAutoResearch(query, {
+      limit: requestedResearchLimit(query, source === 'youtube' ? 5 : 4),
+      fetchPages: true,
+      mock: /QA_AUTO_RESEARCH_FIXTURE/i.test(query),
+      source
+    });
+    return report.results.length ? report : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatResearchContext(report) {
+  if (!report || !Array.isArray(report.results) || !report.results.length) return '';
+  const lines = [
+    '자동 리서치 자료:',
+    ...report.results.slice(0, 4).map((item, index) => [
+      `${index + 1}. ${item.title}`,
+      `URL: ${item.url}`,
+      item.snippet ? `요약: ${item.snippet}` : '',
+      item.excerpt ? `본문 발췌: ${item.excerpt.slice(0, 900)}` : ''
+    ].filter(Boolean).join('\n'))
+  ];
+  return lines.join('\n\n');
+}
+
+function buildResearchFallbackResult(report, error) {
+  const results = Array.isArray(report && report.results) ? report.results : [];
+  const sources = Array.from(new Set([
+    ...((report && Array.isArray(report.sources)) ? report.sources : []),
+    ...results.map((item) => item && item.url).filter(Boolean)
+  ]));
+  const lines = [
+    '자동 리서치 결과를 저장했습니다.',
+    researchFallbackReason(error),
+    '',
+    ...results.slice(0, 4).map((item, index) => [
+      `${index + 1}. ${item.title || item.url || '리서치 결과'}`,
+      item.url ? `URL: ${item.url}` : '',
+      item.snippet ? `요약: ${item.snippet}` : '',
+      item.excerpt ? `본문 발췌: ${item.excerpt.slice(0, 600)}` : ''
+    ].filter(Boolean).join('\n'))
+  ];
+  return {
+    text: cleanText(lines.join('\n'), 12000),
+    sources
+  };
+}
+
 function walkBrain(root, opts = {}) {
   const limit = Math.min(Number(opts.limit) || 120, 700);
   const snippets = opts.snippets || false;
@@ -1297,18 +2375,66 @@ function lmBase(base) {
   return base.replace(/\/v1\/?$/, '');
 }
 
+function localLlmHeaders(config) {
+  const apiKey = cleanSecret(config && config.llmApiKey, 3000);
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
+function preferredGrokChatModel(models, fallback = GROK_PROXY_MODEL) {
+  const list = Array.isArray(models) ? models : [];
+  return list.find((model) => model === fallback)
+    || list.find((model) => /grok/i.test(model) && !/image|imagine|video|composer/i.test(model))
+    || fallback;
+}
+
 async function listLocalModels(config) {
   if (isLmStudio(config.ollamaBase)) {
     const url = `${lmBase(config.ollamaBase)}/v1/models`;
-    const response = await axios.get(url, { timeout: 3500 });
+    const response = await axios.get(url, {
+      timeout: 3500,
+      headers: localLlmHeaders(config)
+    });
     return (response.data && response.data.data || []).map((model) => model.id).filter(Boolean);
   }
   const response = await axios.get(`${config.ollamaBase}/api/tags`, { timeout: 3500 });
   return (response.data && response.data.models || []).map((model) => model.name).filter(Boolean);
 }
 
+async function getGrokProxyStatus(config = getConfig()) {
+  const command = await findCommand([
+    'cli-proxy-api',
+    'cliproxyapi',
+    '/opt/homebrew/bin/cli-proxy-api',
+    '/opt/homebrew/bin/cliproxyapi',
+    '/usr/local/bin/cli-proxy-api',
+    '/usr/local/bin/cliproxyapi'
+  ]);
+  const status = {
+    ok: true,
+    ...GROK_PROXY,
+    installed: Boolean(command),
+    command,
+    running: false,
+    authConfigured: Boolean(config.llmApiKey),
+    models: [],
+    error: ''
+  };
+  try {
+    status.models = await listLocalModels({ ...config, ollamaBase: GROK_PROXY.base });
+    status.running = true;
+    status.model = preferredGrokChatModel(status.models, status.model);
+  } catch (error) {
+    status.error = modelErrorMessage(error);
+  }
+  return status;
+}
+
 function isEmbeddingModel(model) {
   return /embed|embedding/i.test(String(model || ''));
+}
+
+function isNonChatModel(model) {
+  return isEmbeddingModel(model) || /image|imagine|video|composer/i.test(String(model || ''));
 }
 
 function parseModelRef(value) {
@@ -1316,6 +2442,7 @@ function parseModelRef(value) {
   if (raw.startsWith('openai:')) return { provider: 'openai', model: raw.slice('openai:'.length) };
   if (raw.startsWith('zai:')) return { provider: 'zai', model: raw.slice('zai:'.length) };
   if (raw.startsWith('moonshot:')) return { provider: 'moonshot', model: raw.slice('moonshot:'.length) };
+  if (raw.startsWith('xai:')) return { provider: 'xai', model: raw.slice('xai:'.length) };
   if (raw.startsWith('local:')) return { provider: 'local', model: raw.slice('local:'.length) };
   return { provider: 'local', model: raw };
 }
@@ -1326,10 +2453,10 @@ function modelRef(provider, model) {
 
 function firstChatModel(models, preferred) {
   const preferredRef = parseModelRef(preferred);
-  if (preferredRef.provider === 'local' && preferredRef.model && !isEmbeddingModel(preferredRef.model)) {
+  if (preferredRef.provider === 'local' && preferredRef.model && !isNonChatModel(preferredRef.model)) {
     return preferredRef.model;
   }
-  return (models || []).find((model) => !isEmbeddingModel(model)) || '';
+  return (models || []).find((model) => !isNonChatModel(model)) || '';
 }
 
 function isActiveTaskStatus(status) {
@@ -1351,7 +2478,7 @@ async function listModelOptions(config) {
   const models = [];
 
   if (localResult.status === 'fulfilled') {
-    localResult.value.forEach((model) => {
+    localResult.value.filter((model) => !isNonChatModel(model)).forEach((model) => {
       models.push({
         id: modelRef('local', model),
         provider: 'local',
@@ -1364,7 +2491,9 @@ async function listModelOptions(config) {
     errors.push({ provider: 'local', error: modelErrorMessage(localResult.reason) });
   }
 
-  models.push(...PAID_MODELS.map((model) => ({ ...model })));
+  models.push(...PAID_MODELS
+    .filter((model) => !(providerConfig(model.provider) || {}).hidden)
+    .map((model) => ({ ...model })));
   return { models, errors };
 }
 
@@ -1565,6 +2694,7 @@ function providerName(provider, config) {
   if (provider === 'openai') return 'OpenAI GPT-5.6';
   if (provider === 'zai') return 'GLM 5.1';
   if (provider === 'moonshot') return 'Kimi 2.6';
+  if (provider === 'xai') return 'Grok 4.3';
   return isLmStudio(config.ollamaBase) ? 'LM Studio' : 'Ollama';
 }
 
@@ -1572,6 +2702,7 @@ function providerBase(provider, config) {
   if (provider === 'openai') return OPENAI_API_BASE;
   if (provider === 'zai') return ZAI_API_BASE;
   if (provider === 'moonshot') return MOONSHOT_API_BASE;
+  if (provider === 'xai') return XAI_API_BASE;
   return config.ollamaBase;
 }
 
@@ -1599,8 +2730,8 @@ function modelErrorKind(error) {
   if (/not supported|unsupported model|model.*unsupported/.test(detail)) {
     return 'unsupported';
   }
-  if ((status === 402 || status === 429)
-    && /insufficient|balance|billing|recharge|quota|credit|suspended/.test(detail)) {
+  if ((status === 402 || status === 403 || status === 429)
+    && /insufficient|balance|billing|recharge|quota|credit|licen[cs]e|purchase|payment|suspended/.test(detail)) {
     return 'billing';
   }
   if ((status === 401 || status === 403)
@@ -1609,6 +2740,11 @@ function modelErrorKind(error) {
   }
   if (error && error.code === 'ECONNABORTED') return 'timeout';
   return '';
+}
+
+function isGrokProxyAuthUnavailable(error) {
+  const detail = rawModelErrorDetail(error).toLowerCase();
+  return /auth_unavailable|no auth available/.test(detail);
 }
 
 function modelErrorMessage(error) {
@@ -1621,15 +2757,30 @@ function modelErrorMessage(error) {
   if (kind === 'unsupported') {
     return `현재 구독 인증 경로에서 지원되지 않는 모델입니다. (${detail})`;
   }
+  if (isGrokProxyAuthUnavailable(error)) {
+    return `Grok OAuth Proxy 인증 세션을 사용할 수 없습니다. API 패널의 Grok Proxy 버튼을 다시 누르거나 터미널에서 ${GROK_PROXY.loginCommand}를 실행해 xAI OAuth 로그인을 갱신해 주세요. (${detail})`;
+  }
   if (error && error.code === 'ECONNABORTED') {
     return `모델 응답 시간이 초과되었습니다. (${detail})`;
   }
   return status ? `LLM ${status}: ${detail}` : detail;
 }
 
+function researchFallbackReason(error) {
+  const kind = modelErrorKind(error);
+  if (kind === 'billing') return 'LLM 결제/잔액 상태 때문에 답변 생성이 차단되었습니다.';
+  if (kind === 'unsupported') return '선택한 모델이 현재 인증 경로에서 지원되지 않아 답변 생성이 중단되었습니다.';
+  if (kind === 'auth') return 'LLM 인증 상태 때문에 답변 생성이 중단되었습니다.';
+  if (kind === 'timeout' || (error && error.code === 'ECONNABORTED')) return 'LLM 응답 시간이 초과되어 답변 생성이 중단되었습니다.';
+  return 'LLM 호출 실패로 답변 생성이 중단되었습니다.';
+}
+
 async function callModel(config, payload) {
   const selectedModel = parseModelRef(payload.model || config.defaultModel);
-  const model = selectedModel.model;
+  let model = selectedModel.model;
+  if (selectedModel.provider === 'local' && isGrokProxyBase(config.ollamaBase) && /grok/i.test(model) && isNonChatModel(model)) {
+    model = GROK_PROXY_MODEL;
+  }
   if (!model) throw new Error('MODEL_REQUIRED');
   const requestedTimeout = Number(payload.chatTimeoutMs || payload.timeoutMs);
   const requestTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
@@ -1730,15 +2881,50 @@ async function callModel(config, payload) {
       return extractModelText(response.data).trim();
     }
 
+    if (selectedModel.provider === 'xai') {
+      const credential = providerCredential('xai');
+      if (!credential.token) {
+        const error = new Error('Grok / xAI API Key가 필요합니다.');
+        error.code = 'XAI_AUTH_REQUIRED';
+        throw error;
+      }
+      const response = await axios.post(`${XAI_API_BASE}/chat/completions`, {
+        model,
+        messages: nextMessages,
+        max_tokens: maxTokens,
+        stream: false
+      }, {
+        timeout: requestTimeout,
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      return extractModelText(response.data).trim();
+    }
+
     if (isLmStudio(config.ollamaBase)) {
-      const response = await axios.post(`${lmBase(config.ollamaBase)}/v1/chat/completions`, {
+      const url = `${lmBase(config.ollamaBase)}/v1/chat/completions`;
+      const body = {
         model,
         messages: nextMessages,
         temperature: 0.4,
         max_tokens: maxTokens,
         reasoning: { effort: 'none' },
         stream: false
-      }, { timeout: requestTimeout });
+      };
+      const request = () => axios.post(url, body, {
+        timeout: requestTimeout,
+        headers: localLlmHeaders(config)
+      });
+      let response;
+      try {
+        response = await request();
+      } catch (error) {
+        if (!isGrokProxyBase(config.ollamaBase) || !isGrokProxyAuthUnavailable(error)) throw error;
+        await listLocalModels({ ...config, ollamaBase: GROK_PROXY.base });
+        response = await request();
+      }
       return extractModelText(response.data).trim();
     }
 
@@ -1789,42 +2975,167 @@ function buildTaskPrompt(task) {
 
 async function runTaskWithModel(config, task) {
   const timeoutMs = taskRunTimeoutMs(config);
-  const primary = await callModel(config, {
-    agent: task.agent || 'ceo',
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a concise Korean task executor. Return only the final answer. Never write reasoning, analysis, or thinking process. If live web data is required and unavailable, say that live lookup is required instead of guessing.'
-      },
-      { role: 'user', content: `${buildTaskPrompt(task)}\n\n결과:` }
-    ],
-    message: task.title || '',
-    model: config.defaultModel,
-    useBrain: false,
-    maxTokens: 220,
-    chatTimeoutMs: timeoutMs
-  });
-  if (primary.text && primary.text.trim()) return primary;
+  const research = await researchForTask(task);
+  const researchContext = formatResearchContext(research);
+  const researchSources = research && Array.isArray(research.sources) ? research.sources : [];
+  const taskPrompt = researchContext
+    ? `${buildTaskPrompt(task)}\n\n${researchContext}\n\n위 자동 리서치 자료의 URL을 근거로 최종 답변에 핵심 근거를 반영하세요.`
+    : buildTaskPrompt(task);
+  let primary;
+  try {
+    primary = await callModel(config, {
+      agent: task.agent || 'ceo',
+      messages: [
+        {
+          role: 'system',
+          content: researchContext
+            ? 'You are a concise Korean research executor. Return only the final answer in Korean. Use the provided research sources and do not invent facts beyond them. Never write reasoning, analysis, or thinking process.'
+            : 'You are a concise Korean task executor. Return only the final answer. Never write reasoning, analysis, or thinking process. If live web data is required and unavailable, say that live lookup is required instead of guessing.'
+        },
+        { role: 'user', content: `${taskPrompt}\n\n결과:` }
+      ],
+      message: task.title || '',
+      model: config.defaultModel,
+      useBrain: false,
+      maxTokens: researchContext ? 700 : 220,
+      chatTimeoutMs: timeoutMs
+    });
+  } catch (error) {
+    if (researchContext) return buildResearchFallbackResult(research, error);
+    throw error;
+  }
+  if (primary.text && primary.text.trim()) {
+    return {
+      ...primary,
+      sources: Array.from(new Set([...(primary.sources || []), ...researchSources]))
+    };
+  }
 
-  const fallback = await callModel(config, {
-    agent: task.agent || 'ceo',
-    messages: [{
-      role: 'user',
-      content:
-        `${buildTaskPrompt(task)}\n\n` +
-        '위 작업의 최종 답변만 한국어로 작성해 주세요. 추론 과정은 쓰지 마세요. ' +
-        '실시간 웹/소셜 데이터 조회가 필요하지만 사용할 수 없다면, "실시간 조회가 필요합니다"라고 명확히 답하세요.'
-    }],
-    message: task.title || '',
-    model: config.defaultModel,
-    useBrain: false,
-    maxTokens: 220,
-    chatTimeoutMs: timeoutMs
-  });
+  let fallback;
+  try {
+    fallback = await callModel(config, {
+      agent: task.agent || 'ceo',
+      messages: [{
+        role: 'user',
+        content:
+          `${taskPrompt}\n\n` +
+          '위 작업의 최종 답변만 한국어로 작성해 주세요. 추론 과정은 쓰지 마세요. ' +
+          (researchContext
+            ? '제공된 자동 리서치 자료의 근거를 반영하고, 없는 내용은 추측하지 마세요.'
+            : '실시간 웹/소셜 데이터 조회가 필요하지만 사용할 수 없다면, "실시간 조회가 필요합니다"라고 명확히 답하세요.')
+      }],
+      message: task.title || '',
+      model: config.defaultModel,
+      useBrain: false,
+      maxTokens: researchContext ? 700 : 220,
+      chatTimeoutMs: timeoutMs
+    });
+  } catch (error) {
+    if (researchContext) return buildResearchFallbackResult(research, error);
+    throw error;
+  }
   return {
     ...fallback,
-    sources: fallback.sources && fallback.sources.length ? fallback.sources : primary.sources
+    sources: Array.from(new Set([...(fallback.sources || []), ...(primary.sources || []), ...researchSources]))
   };
+}
+
+function markTaskRunning(state, task, trigger = 'manual') {
+  const startedAt = nowIso();
+  task.status = 'running';
+  task.startedAt = task.startedAt || startedAt;
+  task.updatedAt = startedAt;
+  task.runTrigger = trigger;
+  delete task.error;
+  delete task.result;
+  delete task.sources;
+  delete task.failedAt;
+  delete task.staleRecoveredAt;
+  pushEvent(state, trigger === 'manual' ? 'task.running' : 'task.autorun', `작업 실행 시작: ${task.title}`, { agent: task.agent });
+}
+
+function finishTaskSuccess(state, task, result) {
+  const text = cleanText(result && result.text, 12000);
+  if (!text) throw new Error('모델이 빈 응답을 반환했습니다.');
+  if (looksLikeReasoningText(text)) {
+    throw new Error('모델이 최종 답변 대신 추론 과정을 반환했습니다. reasoning 비활성 옵션이나 모델 설정을 확인해 주세요.');
+  }
+  task.status = 'done';
+  task.result = text;
+  task.sources = Array.isArray(result.sources) ? result.sources : [];
+  task.completedAt = nowIso();
+  task.updatedAt = task.completedAt;
+  delete task.error;
+  delete task.failedAt;
+  pushEvent(state, 'task.completed', `작업 완료: ${task.title}`, { agent: task.agent });
+}
+
+function finishTaskFailure(state, task, error) {
+  task.status = 'failed';
+  task.error = modelErrorMessage(error);
+  task.failedAt = nowIso();
+  task.updatedAt = task.failedAt;
+  delete task.result;
+  delete task.sources;
+  pushEvent(state, 'task.failed', `작업 실패: ${task.error}`, { agent: task.agent });
+}
+
+async function runTaskToTerminal(config, id, trigger = 'manual') {
+  const state = loadState();
+  const task = state.tasks.find((item) => item.id === id);
+  if (!task) {
+    const error = new Error('TASK_NOT_FOUND');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (task.source === 'company') {
+    const error = new Error('COMPANY_TASK_READ_ONLY');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!isActiveTaskStatus(task.status) && task.status !== 'running') return enrichTask(task);
+
+  markTaskRunning(state, task, trigger);
+  saveState(state);
+
+  try {
+    const result = await runTaskWithModel(config, task);
+    const latest = loadState();
+    const latestTask = latest.tasks.find((item) => item.id === id);
+    if (!latestTask) {
+      const error = new Error('TASK_NOT_FOUND');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (latestTask.status === 'cancelled') return enrichTask(latestTask);
+    finishTaskSuccess(latest, latestTask, result);
+    saveState(latest);
+    return enrichTask(latestTask);
+  } catch (error) {
+    const latest = loadState();
+    const latestTask = latest.tasks.find((item) => item.id === id);
+    if (latestTask) {
+      finishTaskFailure(latest, latestTask, error);
+      saveState(latest);
+      return enrichTask(latestTask);
+    }
+    throw error;
+  }
+}
+
+function scheduleTaskRun(config, id, trigger = 'auto') {
+  if (!id) return null;
+  if (taskRunQueue.has(id)) return taskRunQueue.get(id);
+  const run = runTaskToTerminal(config, id, trigger)
+    .catch((error) => {
+      console.warn(`[task:${id}] auto run failed: ${modelErrorMessage(error)}`);
+      return null;
+    })
+    .finally(() => {
+      taskRunQueue.delete(id);
+    });
+  taskRunQueue.set(id, run);
+  return run;
 }
 
 async function testLlmConnection(config, payload = {}) {
@@ -1834,6 +3145,7 @@ async function testLlmConnection(config, payload = {}) {
     defaultModel: String(payload.model || payload.defaultModel || config.defaultModel || ''),
     chatTimeoutMs: Math.max(1000, Math.min(Number(payload.chatTimeoutMs || 12000), config.timeoutMs))
   };
+  effective.defaultModel = normalizeDefaultModelForConfig(effective.ollamaBase, effective.defaultModel);
   const selectedRef = parseModelRef(effective.defaultModel);
   const startedAt = Date.now();
   const result = {
@@ -1848,7 +3160,7 @@ async function testLlmConnection(config, payload = {}) {
     stages: [],
     authRequired: false,
     authUrl: '',
-    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'zai' || selectedRef.provider === 'moonshot'
+    billingUrl: selectedRef.provider === 'openai' || selectedRef.provider === 'zai' || selectedRef.provider === 'moonshot' || selectedRef.provider === 'xai'
       ? (providerConfig(selectedRef.provider).billingUrl || '')
       : '',
     flowId: '',
@@ -1857,7 +3169,7 @@ async function testLlmConnection(config, payload = {}) {
     text: ''
   };
 
-  if (selectedRef.provider === 'openai' || selectedRef.provider === 'zai' || selectedRef.provider === 'moonshot') {
+  if (selectedRef.provider === 'openai' || selectedRef.provider === 'zai' || selectedRef.provider === 'moonshot' || selectedRef.provider === 'xai') {
     result.model = selectedRef.model;
     if (!result.model) {
       result.error = `${result.provider} 모델을 선택해 주세요.`;
@@ -1877,7 +3189,9 @@ async function testLlmConnection(config, payload = {}) {
         ? 'OpenAI 구독 인증이 필요합니다.'
         : selectedRef.provider === 'zai'
           ? 'GLM 5.1 / Z.AI API Key가 필요합니다.'
-          : 'Kimi 2.6 / Moonshot API Key가 필요합니다.';
+          : selectedRef.provider === 'moonshot'
+            ? 'Kimi 2.6 / Moonshot API Key가 필요합니다.'
+            : 'Grok / xAI API Key가 필요합니다.';
       result.latencyMs = Date.now() - startedAt;
       result.stages.push({ name: 'auth', ok: false, error: result.error });
       return result;
@@ -2091,9 +3405,29 @@ function recoverStaleRunningTasks(state, config) {
   return changed;
 }
 
+function shouldAutoRunTask(task) {
+  if (!task || task.source === 'company') return false;
+  if (taskRunQueue.has(task.id)) return false;
+  if (task.status === 'running') return false;
+  if (task.status !== 'open') return false;
+  if (task.autoRun === true) return true;
+  return taskProgress(task).percent >= 92;
+}
+
+function scheduleAutoRunnableTasks(state, config) {
+  let scheduled = 0;
+  state.tasks.forEach((task) => {
+    if (!shouldAutoRunTask(task)) return;
+    scheduled += 1;
+    scheduleTaskRun(config, task.id, task.autoRun === true ? 'auto' : 'review-auto');
+  });
+  return scheduled;
+}
+
 function buildDashboard(config) {
-  const state = loadState();
+  let state = loadState();
   if (recoverStaleRunningTasks(state, config)) saveState(state);
+  if (scheduleAutoRunnableTasks(state, config)) state = loadState();
   const brain = walkBrain(config.localBrainPath, { limit: 500 });
   const tasks = listTasks(state, config);
   const approvals = listApprovals(state, config);
@@ -2116,7 +3450,7 @@ function buildDashboard(config) {
     mode: 'standalone-web',
     version: require(path.join(ROOT, 'package.json')).version,
     company: companyState.name || companyState.companyName || 'Connect AI Company',
-    config,
+    config: publicConfig(config),
     brain: { fileCount: brain.files.length, capped: brain.capped, path: config.localBrainPath },
     agents,
     tasks: {
@@ -2172,6 +3506,7 @@ async function handleTasks(req, res, pathname, config) {
       agentIds: [agent],
       priority: ['urgent', 'high', 'normal', 'low'].includes(body.priority) ? body.priority : 'normal',
       status: 'open',
+      autoRun: body.autoRun === true,
       dueAt: cleanText(body.dueAt, 80),
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -2180,6 +3515,7 @@ async function handleTasks(req, res, pathname, config) {
     state.tasks.unshift(task);
     pushEvent(state, 'task.created', `${getAgent(state, agent).name}에게 작업 등록: ${title}`, { agent });
     saveState(state);
+    if (task.autoRun) scheduleTaskRun(config, task.id, 'auto');
     sendJson(res, 201, { ok: true, task: enrichTask(task) });
     return true;
   }
@@ -2197,57 +3533,21 @@ async function handleTasks(req, res, pathname, config) {
       return true;
     }
 
-    task.status = 'running';
-    task.startedAt = nowIso();
-    task.updatedAt = task.startedAt;
-    delete task.error;
-    delete task.result;
-    delete task.sources;
-    delete task.failedAt;
-    delete task.staleRecoveredAt;
-    pushEvent(state, 'task.running', `작업 실행 시작: ${task.title}`, { agent: task.agent });
-    saveState(state);
-
     try {
-      const result = await runTaskWithModel(config, task);
-      const latest = loadState();
-      const latestTask = latest.tasks.find((item) => item.id === id);
-      if (!latestTask) {
-        sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+      const running = taskRunQueue.get(id);
+      const completedTask = running ? await running : await runTaskToTerminal(config, id, 'manual');
+      if (!completedTask) {
+        sendJson(res, 500, { ok: false, error: 'TASK_RUN_FAILED' });
         return true;
       }
-      if (latestTask.status === 'cancelled') {
-        sendJson(res, 200, { ok: true, task: enrichTask(latestTask) });
+      if (completedTask.status === 'failed') {
+        sendJson(res, 502, { ok: false, error: completedTask.error || 'TASK_RUN_FAILED', task: completedTask });
         return true;
       }
-      const text = cleanText(result.text, 12000);
-      if (!text) throw new Error('모델이 빈 응답을 반환했습니다.');
-      if (looksLikeReasoningText(text)) {
-        throw new Error('모델이 최종 답변 대신 추론 과정을 반환했습니다. reasoning 비활성 옵션이나 모델 설정을 확인해 주세요.');
-      }
-      latestTask.status = 'done';
-      latestTask.result = text;
-      latestTask.sources = Array.isArray(result.sources) ? result.sources : [];
-      latestTask.completedAt = nowIso();
-      latestTask.updatedAt = latestTask.completedAt;
-      delete latestTask.error;
-      pushEvent(latest, 'task.completed', `작업 완료: ${latestTask.title}`, { agent: latestTask.agent });
-      saveState(latest);
-      sendJson(res, 200, { ok: true, task: enrichTask(latestTask) });
+      sendJson(res, 200, { ok: true, task: completedTask });
     } catch (error) {
-      const latest = loadState();
-      const latestTask = latest.tasks.find((item) => item.id === id);
-      if (latestTask) {
-        latestTask.status = 'failed';
-        latestTask.error = modelErrorMessage(error);
-        latestTask.failedAt = nowIso();
-        latestTask.updatedAt = latestTask.failedAt;
-        delete latestTask.result;
-        delete latestTask.sources;
-        pushEvent(latest, 'task.failed', `작업 실패: ${latestTask.error}`, { agent: latestTask.agent });
-        saveState(latest);
-      }
-      sendJson(res, 502, { ok: false, error: modelErrorMessage(error), task: latestTask ? enrichTask(latestTask) : undefined });
+      const status = error.statusCode || 502;
+      sendJson(res, status, { ok: false, error: modelErrorMessage(error) });
     }
     return true;
   }
@@ -2330,6 +3630,19 @@ async function handleTasks(req, res, pathname, config) {
     return true;
   }
 
+  if (id && req.method === 'DELETE') {
+    const index = state.tasks.findIndex((item) => item.id === id);
+    if (index < 0) {
+      sendJson(res, 404, { ok: false, error: 'TASK_NOT_FOUND' });
+      return true;
+    }
+    const [task] = state.tasks.splice(index, 1);
+    pushEvent(state, 'task.deleted', `작업 삭제: ${task.title || id}`, { agent: task.agent });
+    saveState(state);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
   return false;
 }
 
@@ -2391,6 +3704,19 @@ async function handleApprovals(req, res, pathname, config) {
       return true;
     }
     sendJson(res, 404, { ok: false, error: 'APPROVAL_NOT_FOUND' });
+    return true;
+  }
+
+  if (id && req.method === 'DELETE') {
+    const index = state.approvals.findIndex((item) => item.id === id);
+    if (index < 0) {
+      sendJson(res, 404, { ok: false, error: 'APPROVAL_NOT_FOUND' });
+      return true;
+    }
+    const [approval] = state.approvals.splice(index, 1);
+    pushEvent(state, 'approval.deleted', `승인 삭제: ${approval.title || id}`, { agent: approval.agent });
+    saveState(state);
+    sendJson(res, 200, { ok: true });
     return true;
   }
 
@@ -2482,7 +3808,7 @@ async function handleApi(req, res, pathname, url) {
       ok: true,
       mode: dashboard.mode,
       version: dashboard.version,
-      config,
+      config: publicConfig(config),
       brain: dashboard.brain,
       agents: dashboard.agents
     });
@@ -2496,6 +3822,11 @@ async function handleApi(req, res, pathname, url) {
 
   if (req.method === 'GET' && pathname === '/api/llm/providers') {
     sendJson(res, 200, { ok: true, providers: getProviderSummaries() });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/llm/proxy/cliproxyapi') {
+    sendJson(res, 200, await getGrokProxyStatus(config));
     return;
   }
 
@@ -2645,6 +3976,23 @@ async function handleApi(req, res, pathname, url) {
     return;
   }
 
+  if (req.method === 'GET' && pathname === '/api/research') {
+    try {
+      const query = cleanText(url.searchParams.get('q') || '', 300);
+      const mockParam = cleanText(url.searchParams.get('mock') || '', 20);
+      const mock = ['1', 'ok', 'empty', 'error'].includes(mockParam)
+        ? (mockParam === '1' ? 'ok' : mockParam)
+        : '';
+      const source = cleanText(url.searchParams.get('source') || '', 30).toLowerCase();
+      const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 4), 10));
+      const report = await runAutoResearch(query, { mock, source, limit, fetchPages: url.searchParams.get('fetch') !== '0', config });
+      sendJson(res, 200, report);
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: error.message || String(error), results: [], sources: [] });
+    }
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/api/brain/file') {
     const requested = url.searchParams.get('path') || '';
     const file = safeJoin(config.localBrainPath, requested);
@@ -2658,13 +4006,14 @@ async function handleApi(req, res, pathname, url) {
   }
 
   if (req.method === 'GET' && pathname === '/api/config') {
-    sendJson(res, 200, { ok: true, config });
+    sendJson(res, 200, { ok: true, config: publicConfig(config) });
     return;
   }
 
   if (req.method === 'POST' && pathname === '/api/config') {
     try {
       const body = await readJsonBody(req);
+      const local = readJson(LOCAL_CONFIG);
       const next = {
         ollamaBase: body.ollamaBase || config.ollamaBase,
         defaultModel: body.defaultModel || config.defaultModel,
@@ -2673,9 +4022,12 @@ async function handleApi(req, res, pathname, url) {
         timeoutMs: Number(body.timeoutMs || config.timeoutMs),
         chatTimeoutMs: Number(body.chatTimeoutMs || config.chatTimeoutMs)
       };
+      next.defaultModel = normalizeDefaultModelForConfig(next.ollamaBase, next.defaultModel);
+      const savedLlmApiKey = cleanSecret(body.llmApiKey || local.llmApiKey || local.localLlmApiKey || config.llmApiKey || '', 3000);
+      if (savedLlmApiKey) next.llmApiKey = savedLlmApiKey;
       writeJson(LOCAL_CONFIG, next);
       brainCache.clear();
-      sendJson(res, 200, { ok: true, config: getConfig() });
+      sendJson(res, 200, { ok: true, config: publicConfig(getConfig()) });
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error.message || String(error) });
     }
@@ -2720,7 +4072,35 @@ async function handleApi(req, res, pathname, url) {
       session.agent = agent;
       session.messages.push({ id: newId('msg'), role: 'user', agent, content: message, createdAt: nowIso() });
 
-      const result = await callModel(config, { ...body, message, agent });
+      const research = await researchForChat(message);
+      const researchContext = formatResearchContext(research);
+      const researchSources = research && Array.isArray(research.sources) ? research.sources : [];
+      const result = await callModel(config, researchContext
+        ? {
+          ...body,
+          message,
+          agent,
+          useBrain: false,
+          maxTokens: Math.max(Number(body.maxTokens) || 700, 1000),
+          messages: [
+            {
+              role: 'system',
+              content: [
+                'You are a concise Korean research assistant for Connect AI.',
+                'Use the provided automatic research sources.',
+                'Do not say you cannot access Threads, X, or web data when sources are provided.',
+                'If the source is only a platform search URL, clearly say it is a search link rather than an individual post.',
+                'Never invent post contents, authors, dates, or URLs.'
+              ].join(' ')
+            },
+            {
+              role: 'user',
+              content: `${message}\n\n${researchContext}\n\n위 자료의 URL을 근거로 한국어로 요약해줘.`
+            }
+          ]
+        }
+        : { ...body, message, agent });
+      result.sources = Array.from(new Set([...(result.sources || []), ...researchSources]));
       const text = result.text || '모델이 빈 응답을 반환했습니다. 모델 설정이나 컨텍스트 길이를 확인해 주세요.';
       session.messages.push({ id: newId('msg'), role: 'assistant', agent, content: text, sources: result.sources, createdAt: nowIso() });
       session.updatedAt = nowIso();
@@ -2770,6 +4150,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Connect AI web app running at http://127.0.0.1:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`Connect AI web app running at http://127.0.0.1:${PORT}`);
+  });
+}
+
+module.exports = {
+  extractDuckDuckGoResults,
+  isFetchSafeResearchUrl,
+  isPrivateResearchHost,
+  isSafeResearchUrl,
+  normalizeResearchHostname,
+  normalizeResearchUrl,
+  researchSafeLookup
+};

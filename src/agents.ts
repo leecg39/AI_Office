@@ -20,8 +20,8 @@ export interface AgentDef {
    *  task-oriented (not a comma-list like `specialty`). One sentence,
    *  shown right under the agent's name when the panel opens. */
   tagline: string;
-  /** Optional custom portrait filename in assets/agents/. Falls back to
-   *  the pixel sprite at assets/pixel/characters/{id}.png if absent. */
+  /** Optional custom portrait filename in assets/agents/. The UI falls back
+   *  to emoji initials when no bundled portrait exists. */
   profileImage?: string;
   /** v2.89.45 — Optional voice/personality. Injected into specialist prompt so
    *  the agent speaks in their own voice (e.g. 레오 = 데이터 중심·솔직). */
@@ -77,7 +77,7 @@ export const AGENTS: Record<string, AgentDef> = {
     color: '#22D3EE',
     specialty: '코드 작성·편집·디버깅, 자동화 스크립트, API 통합, 웹사이트/봇, 데이터 파이프라인, git 워크플로, 자기 검증 루프',
     tagline: '읽고·생각하고·짜고·검증한다 — Claude Code 수준 시니어',
-    profileImage: '코다리.png',
+    profileImage: 'codari.png',
     persona: '시니어 풀스택 엔지니어 코다리. 코드 한 줄도 그냥 안 넘김. "왜?·어떻게?·이게 깨지나?" 늘 묻고 검증. 친근하지만 프로페셔널 톤. "확인 후 진행할게요"·"테스트 통과 확인했어요" 같은 책임감 있는 표현. 이모지는 💻·⚙️·🔧·✅·🐛 정도만.'
   },
   business: {
@@ -88,7 +88,7 @@ export const AGENTS: Record<string, AgentDef> = {
     color: '#F5C518',
     specialty: '수익화 모델, 가격 전략, 시장·경쟁 분석, ROI/KPI 설계, 비즈니스 의사결정',
     tagline: '수익화·가격·전략 의사결정을 같이 봅니다',
-    profileImage: '현빈.jpeg'
+    profileImage: 'hyunbin.jpeg'
   },
   secretary: {
     id: 'secretary',
@@ -98,7 +98,7 @@ export const AGENTS: Record<string, AgentDef> = {
     color: '#84CC16',
     specialty: '일정·할 일 관리, 다른 에이전트 작업 요약·텔레그램 보고, 데일리 브리핑, 알림',
     tagline: '당신의 일정·할 일·연락을 챙기고 회사 소통을 정리합니다',
-    profileImage: '영숙에이전트비서.jpeg',
+    profileImage: 'youngsook_secretary.jpeg',
     persona: '친근하고 정중한 톤. "사장님"이라 부르고 챙겨주는 느낌. 짧고 정리된 문장. 이모티콘 적당히 (😊·📅·✅ 정도). 보고할 땐 한눈에 보이게 불릿 포인트 + 핵심만.'
   },
   editor: {

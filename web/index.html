@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Connect AI Web</title>
-    <link rel="stylesheet" href="/styles.css?v=20260606-3">
+    <link rel="stylesheet" href="/styles.css?v=20260608-8">
   </head>
-  <body>
+  <body class="result-collapsed">
     <div class="shell">
       <aside class="sidebar">
         <button id="sidebarToggle" type="button" class="sidebar-toggle" aria-label="패널 닫기" aria-expanded="true">‹</button>
@@ -86,23 +86,22 @@
             <aside id="taskDetail" class="task-detail" aria-live="polite"></aside>
           </section>
 
-          <section class="surface">
+          <section class="surface chat-surface">
             <div class="surface-head">
               <div>
-                <div class="section-kicker">Approval Gate</div>
-                <h2>승인</h2>
+                <div class="section-kicker">Agent Console</div>
+                <h2>채팅</h2>
               </div>
+              <label class="brain-toggle"><input id="useBrain" type="checkbox"> Brain</label>
             </div>
-            <form id="approvalForm" class="stack-form">
-              <input id="approvalTitle" placeholder="승인 제목">
-              <div class="split">
-                <select id="approvalAgent"></select>
-                <input id="approvalKind" placeholder="kind" value="general">
+            <section id="chatLog" class="chat-log" aria-live="polite"></section>
+            <form id="chatForm" class="composer">
+              <textarea id="messageInput" rows="3" placeholder="예: 오늘 AI 뉴스 5개를 근거 URL과 함께 정리해줘"></textarea>
+              <div class="composer-footer">
+                <span id="hint">Enter 전송 · Shift+Enter 줄바꿈 · 한글 조합 중 Enter는 전송하지 않음</span>
+                <button id="sendButton" type="submit">Send</button>
               </div>
-              <textarea id="approvalSummary" rows="3" placeholder="승인 내용 요약"></textarea>
-              <button type="submit">Queue</button>
             </form>
-            <div id="approvalList" class="item-list"></div>
           </section>
         </div>
 
@@ -123,26 +122,31 @@
             <form id="brainSearchForm" class="search-form">
               <input id="brainQuery" placeholder="지식 파일 검색어">
               <button type="submit">Search</button>
+              <button type="button" id="autoResearchButton" class="secondary">Research</button>
+              <button type="button" id="xResearchButton" class="secondary">X Search</button>
+              <button type="button" id="threadsResearchButton" class="secondary">Threads</button>
+              <button type="button" id="youtubeResearchButton" class="secondary">YouTube</button>
             </form>
             <div id="brainResults" class="brain-results"></div>
           </section>
 
-          <section class="surface chat-surface">
+          <section class="surface">
             <div class="surface-head">
               <div>
-                <div class="section-kicker">Agent Console</div>
-                <h2>채팅</h2>
+                <div class="section-kicker">Approval Gate</div>
+                <h2>승인</h2>
               </div>
-              <label class="brain-toggle"><input id="useBrain" type="checkbox"> Brain</label>
             </div>
-            <section id="chatLog" class="chat-log" aria-live="polite"></section>
-            <form id="chatForm" class="composer">
-              <textarea id="messageInput" rows="3" placeholder="에이전트에게 요청하세요"></textarea>
-              <div class="composer-footer">
-                <span id="hint">Enter 전송, Shift+Enter 줄바꿈</span>
-                <button id="sendButton" type="submit">Send</button>
+            <form id="approvalForm" class="stack-form">
+              <input id="approvalTitle" placeholder="승인 제목">
+              <div class="split">
+                <select id="approvalAgent"></select>
+                <input id="approvalKind" placeholder="kind" value="general">
               </div>
+              <textarea id="approvalSummary" rows="3" placeholder="승인 내용 요약"></textarea>
+              <button type="submit">Queue</button>
             </form>
+            <div id="approvalList" class="item-list"></div>
           </section>
         </div>
 
@@ -172,6 +176,7 @@
           <div class="empty">작업을 선택하면 결과물이 여기에 표시됩니다.</div>
         </div>
       </aside>
+      <button id="resultPanelToggle" type="button" class="result-panel-toggle" aria-label="결과 패널 열기" aria-expanded="false">‹</button>
     </div>
     <div id="apiPanel" class="api-panel hidden" aria-hidden="true">
       <button class="api-backdrop" type="button" data-close-api aria-label="닫기"></button>
@@ -208,6 +213,6 @@
         <div id="apiPanelResult" class="test-result" aria-live="polite"></div>
       </section>
     </div>
-    <script src="/app.js?v=20260606-4"></script>
+    <script src="/app.js?v=20260608-7"></script>
   </body>
 </html>

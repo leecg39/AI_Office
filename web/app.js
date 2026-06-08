@@ -9,13 +9,18 @@ const state = {
   dashboard: null,
   sessionId: '',
   selectedTaskId: '',
+  taskAgentSelection: '',
+  approvalAgentSelection: '',
   runningTaskIds: new Set(),
-  resultExport: { status: '', message: '' }
+  resultExport: { status: '', message: '' },
+  isComposingMessage: false,
+  isSendingMessage: false
 };
 
 const $ = (id) => document.getElementById(id);
 const APP_CURRENT_URL_KEY = 'connect-ai-current-url';
 const APP_PREVIOUS_URL_KEY = 'connect-ai-previous-url';
+const GROK_PROXY_STATUS_URL = '/api/llm/proxy/cliproxyapi';
 
 function sameOriginHref(value) {
   if (!value) return '';
@@ -146,6 +151,9 @@ const officePositions = {
 
 const OFFICE_POSITION_KEY = 'connect-ai-office-positions';
 const SIDEBAR_COLLAPSED_KEY = 'connect-ai-sidebar-collapsed';
+const RESULT_PANEL_COLLAPSED_KEY = 'connect-ai-result-panel-collapsed';
+const LAYOUT_DEFAULTS_VERSION_KEY = 'connect-ai-layout-defaults-version';
+const LAYOUT_DEFAULTS_VERSION = '20260608-left-open-result-collapsed';
 
 function loadOfficePositions() {
   try {
@@ -185,6 +193,33 @@ function toggleSidebar() {
   applySidebarState(collapsed);
 }
 
+function applyResultPanelState(collapsed) {
+  document.body.classList.toggle('result-collapsed', collapsed);
+  const toggle = $('resultPanelToggle');
+  if (!toggle) return;
+  toggle.textContent = collapsed ? '‹' : '›';
+  toggle.setAttribute('aria-label', collapsed ? '결과 패널 열기' : '결과 패널 닫기');
+  toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+function loadResultPanelState() {
+  const saved = localStorage.getItem(RESULT_PANEL_COLLAPSED_KEY);
+  applyResultPanelState(saved === null ? true : saved === 'true');
+}
+
+function toggleResultPanel() {
+  const collapsed = !document.body.classList.contains('result-collapsed');
+  localStorage.setItem(RESULT_PANEL_COLLAPSED_KEY, String(collapsed));
+  applyResultPanelState(collapsed);
+}
+
+function applyDefaultLayoutState() {
+  if (localStorage.getItem(LAYOUT_DEFAULTS_VERSION_KEY) === LAYOUT_DEFAULTS_VERSION) return;
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, 'false');
+  localStorage.setItem(RESULT_PANEL_COLLAPSED_KEY, 'true');
+  localStorage.setItem(LAYOUT_DEFAULTS_VERSION_KEY, LAYOUT_DEFAULTS_VERSION);
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -201,10 +236,114 @@ function currentAgent() {
   return state.agents.find((agent) => agent.id === state.selectedAgent) || state.agents[0] || { id: 'ceo', name: 'CEO' };
 }
 
+function messageTime() {
+  return new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function safeDecodeUrl(value) {
+  try {
+    return decodeURIComponent(String(value || ''));
+  } catch {
+    return String(value || '');
+  }
+}
+
+function repairUrlProtocol(value) {
+  return String(value || '').replace(/^(https?):\/(?!\/)/i, '$1://');
+}
+
+function embeddedMarkdownUrl(value) {
+  const raw = String(value || '');
+  const decoded = safeDecodeUrl(raw);
+  for (const candidate of [raw, decoded]) {
+    const match = candidate.match(/\]\((https?:\/{1,2}[^\s)]+)/i);
+    if (match) return repairUrlProtocol(match[1]);
+  }
+  return '';
+}
+
+function reutersCanonicalHref(url) {
+  if (!/reuters/i.test(url.hostname) || !/\.arcpublishing\.com$/i.test(url.hostname)) return '';
+  const cleanPath = safeDecodeUrl(url.pathname).split(/\]\(/)[0].replace(/\/+$/, '/');
+  if (!/^\/[a-z0-9-]+\/.+-\d{4}-\d{2}-\d{2}\/?$/i.test(cleanPath)) return '';
+  try {
+    return new URL(cleanPath, 'https://www.reuters.com').href;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeMessageLink(value) {
+  const candidate = embeddedMarkdownUrl(value) || repairUrlProtocol(value);
+  try {
+    const url = new URL(candidate);
+    const href = reutersCanonicalHref(url) || url.href;
+    return { href, label: href };
+  } catch {
+    return null;
+  }
+}
+
+function splitTrailingUrlPunctuation(value) {
+  const match = String(value || '').match(/^(.+?)([.,;:!?)]*)$/);
+  return match ? { url: match[1], trailing: match[2] || '' } : { url: value, trailing: '' };
+}
+
+function appendLinkedText(target, value) {
+  const text = String(value || '');
+  const urlPattern = /https?:\/{1,2}[^\s<>"']+/gi;
+  let cursor = 0;
+  let match;
+
+  while ((match = urlPattern.exec(text)) !== null) {
+    if (match.index > cursor) {
+      target.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+    }
+    const { url, trailing } = splitTrailingUrlPunctuation(match[0]);
+    const parsed = normalizeMessageLink(url);
+    if (parsed) {
+      const link = document.createElement('a');
+      link.className = 'message-link';
+      link.href = parsed.href;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = parsed.label;
+      target.appendChild(link);
+      if (trailing) target.appendChild(document.createTextNode(trailing));
+    } else {
+      target.appendChild(document.createTextNode(match[0]));
+    }
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < text.length) {
+    target.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+}
+
+function setMessageContent(node, kind, name, text) {
+  node.className = `message ${kind}`.trim();
+  node.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'message-head';
+  const sender = document.createElement('strong');
+  sender.textContent = name || 'Connect AI';
+  const time = document.createElement('time');
+  time.dateTime = new Date().toISOString();
+  time.textContent = messageTime();
+  head.append(sender, time);
+
+  const body = document.createElement('div');
+  body.className = 'message-body';
+  appendLinkedText(body, text);
+
+  node.append(head, body);
+}
+
 function addMessage(kind, name, text) {
   const node = document.createElement('article');
-  node.className = `message ${kind}`;
-  node.innerHTML = `<div class="message-head">${escapeHtml(name)}</div><div>${escapeHtml(text)}</div>`;
+  setMessageContent(node, kind, name, text);
   $('chatLog').appendChild(node);
   $('chatLog').scrollTop = $('chatLog').scrollHeight;
   return node;
@@ -214,12 +353,17 @@ function renderAgentOptions() {
   ['taskAgent', 'approvalAgent'].forEach((id) => {
     const select = $(id);
     if (!select) return;
+    const remembered = id === 'taskAgent' ? state.taskAgentSelection : state.approvalAgentSelection;
+    const fallback = state.agents.some((agent) => agent.id === state.selectedAgent)
+      ? state.selectedAgent
+      : state.agents[0] ? state.agents[0].id : '';
+    const selectedAgentId = state.agents.some((agent) => agent.id === remembered) ? remembered : fallback;
     select.innerHTML = '';
     state.agents.forEach((agent) => {
       const option = document.createElement('option');
       option.value = agent.id;
       option.textContent = agent.name;
-      option.selected = agent.id === state.selectedAgent;
+      option.selected = agent.id === selectedAgentId;
       select.appendChild(option);
     });
   });
@@ -300,31 +444,59 @@ function normalizeModelValue(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (raw === 'openai:gpt-5.5') return 'openai:gpt-5.6';
-  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('zai:') || raw.startsWith('moonshot:')) return raw;
+  if (raw.startsWith('local:') || raw.startsWith('openai:') || raw.startsWith('zai:') || raw.startsWith('moonshot:') || raw.startsWith('xai:')) return raw;
   return `local:${raw}`;
+}
+
+function preferredGrokChatModel(models, fallback = 'grok-4.3') {
+  const list = Array.isArray(models) ? models : [];
+  return list.find((model) => model === fallback)
+    || list.find((model) => /grok/i.test(model) && !isNonChatModel(model))
+    || fallback;
+}
+
+function isNonChatModel(model) {
+  return /embed|embedding|image|imagine|video|composer/i.test(String(model || ''));
+}
+
+function isGrokProxyBase(base) {
+  return String(base || '').replace(/\/+$/, '') === 'http://127.0.0.1:8317/v1';
+}
+
+function normalizeTestModelForBase(base, value) {
+  const modelValue = normalizeModelValue(value);
+  const modelName = modelValue.replace(/^(local|xai):/, '');
+  if (isGrokProxyBase(base) && /grok/i.test(modelName) && isNonChatModel(modelName)) {
+    return 'local:grok-4.3';
+  }
+  return modelValue;
 }
 
 function providerFromModelValue(id) {
   if (id.startsWith('openai:')) return 'openai';
   if (id.startsWith('zai:')) return 'zai';
   if (id.startsWith('moonshot:')) return 'moonshot';
+  if (id.startsWith('xai:')) return 'xai';
   return 'local';
 }
 
+function isHiddenDirectProvider(provider) {
+  return provider === 'moonshot' || provider === 'xai';
+}
+
 function modelNameFromValue(id, provider) {
-  return provider === 'openai'
-    ? id.slice('openai:'.length)
-    : provider === 'zai'
-      ? id.slice('zai:'.length)
-      : provider === 'moonshot'
-        ? id.slice('moonshot:'.length)
-      : id.slice('local:'.length);
+  if (provider === 'openai') return id.slice('openai:'.length);
+  if (provider === 'zai') return id.slice('zai:'.length);
+  if (provider === 'moonshot') return id.slice('moonshot:'.length);
+  if (provider === 'xai') return id.slice('xai:'.length);
+  return id.slice('local:'.length);
 }
 
 function providerLabel(provider) {
   if (provider === 'openai') return 'OpenAI GPT-5.6';
   if (provider === 'zai') return 'GLM 5.1';
   if (provider === 'moonshot') return 'Kimi 2.6';
+  if (provider === 'xai') return 'Grok 4.3';
   return 'Local';
 }
 
@@ -351,13 +523,17 @@ function normalizeModelOption(model) {
   };
 }
 
+function isVisibleModelOption(model) {
+  return model && model.id && !isHiddenDirectProvider(model.provider) && !isNonChatModel(model.model || model.id);
+}
+
 function renderModels() {
   const select = $('modelSelect');
   select.innerHTML = '';
   const optionsById = new Map();
   [state.config.defaultModel, ...state.models].filter(Boolean).forEach((model) => {
     const option = normalizeModelOption(model);
-    if (option.id) optionsById.set(option.id, option);
+    if (isVisibleModelOption(option)) optionsById.set(option.id, option);
   });
   const all = Array.from(optionsById.values());
   if (all.length === 0) {
@@ -371,8 +547,7 @@ function renderModels() {
   const groups = [
     ['local', 'Local LLM'],
     ['openai', 'OpenAI'],
-    ['zai', 'GLM 5.1'],
-    ['moonshot', 'Kimi 2.6']
+    ['zai', 'GLM 5.1']
   ];
   groups.forEach(([provider, label]) => {
     const items = all.filter((model) => model.provider === provider);
@@ -388,7 +563,7 @@ function renderModels() {
     });
     select.appendChild(group);
   });
-  all.filter((model) => !['local', 'openai', 'zai', 'moonshot'].includes(model.provider)).forEach((model) => {
+  all.filter((model) => !['local', 'openai', 'zai', 'moonshot', 'xai'].includes(model.provider)).forEach((model) => {
     const option = document.createElement('option');
     option.value = model.id;
     option.textContent = model.label;
@@ -416,6 +591,28 @@ function providerModelValue(providerId) {
   return option ? option.id : '';
 }
 
+function renderGrokProxyCard() {
+  return `
+    <article class="api-provider grok-proxy-provider">
+      <div class="api-provider-head">
+        <div>
+          <strong>Grok 4.3</strong>
+          <span>구독 계정 · CLIProxyAPI</span>
+        </div>
+        <span class="api-status">Proxy</span>
+      </div>
+      <div class="subscription-auth-row">
+        <span>Grok Build OAuth 프록시로 연결</span>
+        <button type="button" data-api-action="grok-proxy">구독계정</button>
+      </div>
+      <div class="api-action-row">
+        <button type="button" class="secondary" data-api-action="grok-proxy">Grok Proxy</button>
+        <button type="button" class="secondary" data-api-action="grok-proxy-docs">Docs</button>
+      </div>
+    </article>
+  `;
+}
+
 function renderApiProviders() {
   const list = $('apiProviderList');
   if (!list) return;
@@ -423,7 +620,7 @@ function renderApiProviders() {
     list.innerHTML = '<div class="empty">연결할 LLM 공급자가 없습니다.</div>';
     return;
   }
-  list.innerHTML = state.providers.map((provider) => {
+  list.innerHTML = state.providers.filter((provider) => !['moonshot', 'xai'].includes(provider.id)).map((provider) => {
     const issue = state.providerIssues[provider.id] || {};
     const method = provider.source === 'env'
       ? provider.apiKeyEnv
@@ -439,6 +636,8 @@ function renderApiProviders() {
     const isSubscriptionProvider = provider.id === 'openai';
     const isZaiProvider = provider.id === 'zai';
     const isMoonshotProvider = provider.id === 'moonshot';
+    const isXaiProvider = provider.id === 'xai';
+    const isApiKeyOnlyProvider = isZaiProvider || isMoonshotProvider || isXaiProvider;
     const authRow = isSubscriptionProvider
       ? `<div class="subscription-auth-row">
           <span>ChatGPT 구독 계정으로 연결</span>
@@ -450,12 +649,12 @@ function renderApiProviders() {
         </div>`;
     const subscriptionButton = isSubscriptionProvider
       ? ''
-      : isZaiProvider || isMoonshotProvider || !provider.oauthConfigured
+      : isApiKeyOnlyProvider || !provider.oauthConfigured
         ? ''
-      : `<button type="button" class="secondary" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">OAuth</button>`;
-    const accountLabel = isSubscriptionProvider ? '구독 계정' : (isZaiProvider || isMoonshotProvider) ? '키 상태' : 'Account';
+        : `<button type="button" class="secondary" data-api-action="oauth" data-provider="${escapeHtml(provider.id)}">OAuth</button>`;
+    const accountLabel = isSubscriptionProvider ? '구독 계정' : isXaiProvider ? '구독계정' : isApiKeyOnlyProvider ? '키 상태' : 'Account';
     const billingLabel = isSubscriptionProvider ? '구독 관리' : isZaiProvider ? 'Plan' : 'Billing';
-    return `
+    const card = `
       <article class="api-provider ${statusClass}">
         <div class="api-provider-head">
           <div>
@@ -474,6 +673,7 @@ function renderApiProviders() {
         </div>
       </article>
     `;
+    return provider.id === 'openai' ? `${card}${renderGrokProxyCard()}` : card;
   }).join('');
 }
 
@@ -706,6 +906,8 @@ function renderTaskDetail() {
     openButton.addEventListener('click', () => {
       state.selectedTaskId = openButton.dataset.openResult || state.selectedTaskId;
       state.resultExport = { status: '', message: '' };
+      localStorage.setItem(RESULT_PANEL_COLLAPSED_KEY, 'false');
+      applyResultPanelState(false);
       renderResultPanel();
     });
   }
@@ -876,6 +1078,29 @@ function renderBrain(files) {
   `).join('');
 }
 
+function renderResearch(report) {
+  const box = $('brainResults');
+  const items = report && Array.isArray(report.results) ? report.results : [];
+  const summary = report
+    ? `<div class="research-summary ${escapeHtml(report.status || '')}">
+        <strong>${escapeHtml(report.status === 'ok' ? 'Research complete' : report.status === 'error' ? 'Research issue' : report.status === 'empty' ? 'Research empty' : 'Research')}</strong>
+        <span>${escapeHtml(`${report.count || items.length} sources · ${report.mode || 'web'}${report.error ? ` · ${report.error}` : ''}`)}</span>
+      </div>`
+    : '';
+  if (items.length === 0) {
+    const isError = report && report.status === 'error';
+    box.innerHTML = `${summary}<div class="empty">${escapeHtml(isError && report.error ? `리서치 실패 · ${report.error}` : '리서치 결과가 없습니다.')}</div>`;
+    return;
+  }
+  box.innerHTML = summary + items.slice(0, 6).map((item) => `
+    <article class="brain-result research-result" title="${escapeHtml(item.url)}">
+      <strong>${escapeHtml(item.title || item.url)}</strong>
+      <a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>
+      <p>${escapeHtml(item.snippet || item.excerpt || '')}</p>
+    </article>
+  `).join('');
+}
+
 function renderAll() {
   const dashboard = state.dashboard || {};
   state.agents = dashboard.agents || state.agents || [];
@@ -943,10 +1168,12 @@ async function refreshModels() {
       const errorText = data.errors.map((item) => `${item.provider}: ${item.error}`).join('\n');
       setLlmTestResult('pending', `일부 모델 목록 실패 · ${errorText}`);
     }
+    return data;
   } catch (error) {
     state.models = [];
     renderModels();
     addMessage('error', 'Model check', `모델 목록을 가져오지 못했습니다.\n${error.message}`);
+    return { models: [], errors: [{ provider: 'local', error: error.message }] };
   }
 }
 
@@ -1088,6 +1315,8 @@ async function testProvider(providerId) {
     renderApiProviders();
     const nextAction = providerId === 'openai'
       ? '구독 인증 버튼으로 ChatGPT 계정을 다시 연결해 주세요.'
+      : providerId === 'xai'
+        ? 'xAI 콘솔에서 xai- API Key를 발급한 뒤 입력해 주세요.'
       : 'API Key를 입력하고 Save를 눌러 주세요.';
     setApiPanelResult('error', `인증 필요 · ${result.provider || providerLabel(providerId)} · ${result.error || '인증 정보가 없습니다.'} · ${nextAction}`);
   } else if (result.errorKind === 'billing') {
@@ -1095,6 +1324,8 @@ async function testProvider(providerId) {
     renderApiProviders();
     const nextAction = providerId === 'zai'
       ? 'Plan 버튼으로 현재 GLM Coding Plan 사용량과 키 상태를 확인해 주세요.'
+      : providerId === 'xai'
+        ? 'Billing 버튼으로 xAI 콘솔의 결제/사용량 상태를 확인해 주세요.'
       : 'Billing 버튼으로 결제 페이지를 열어주세요.';
     setApiPanelResult('error', `요금제 확인 필요 · ${result.error} · ${nextAction}`);
   } else if (result.errorKind === 'unsupported') {
@@ -1126,7 +1357,10 @@ async function testLlmConnection() {
   button.disabled = true;
   setLlmTestResult('pending', 'LLM 연결 테스트 중...');
   try {
-    const selectedModel = $('modelSelect').value.trim();
+    const selectedModel = normalizeTestModelForBase($('ollamaBase').value.trim(), $('modelSelect').value.trim());
+    if ($('modelSelect').value !== selectedModel && [...$('modelSelect').options].some((option) => option.value === selectedModel)) {
+      $('modelSelect').value = selectedModel;
+    }
     const response = await fetch('/api/llm/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1180,18 +1414,71 @@ async function saveConfig() {
   await refreshModels();
 }
 
+async function applyGrokProxy() {
+  const buttons = [...document.querySelectorAll('#useGrokProxy, [data-api-action="grok-proxy"]')];
+  buttons.forEach((button) => { button.disabled = true; });
+  setLlmTestResult('pending', 'Grok OAuth Proxy 상태 확인 중...');
+  setApiPanelResult('pending', 'Grok OAuth Proxy 상태 확인 중...');
+  try {
+    const status = await api(GROK_PROXY_STATUS_URL);
+    const model = preferredGrokChatModel(status.models, status.model || 'grok-4.3');
+    const modelValue = normalizeModelValue(model);
+    const payload = {
+      ollamaBase: status.base,
+      defaultModel: modelValue,
+      localBrainPath: $('brainPath').value.trim()
+    };
+    const result = await api('/api/config', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    state.config = result.config;
+    $('ollamaBase').value = result.config.ollamaBase || status.base;
+    await refreshDashboard();
+    await refreshModels();
+    renderModels();
+    const selectedValue = normalizeModelValue(result.config.defaultModel || modelValue);
+    if ([...$('modelSelect').options].some((option) => option.value === selectedValue)) {
+      $('modelSelect').value = selectedValue;
+    }
+    const nextStep = status.running
+      ? 'LLM Test로 확인할 수 있습니다.'
+      : status.installed
+        ? `${status.loginCommand} 후 ${status.serviceCommand}를 실행해 주세요.`
+        : `${status.installCommand} 후 ${status.loginCommand}를 실행해 주세요.`;
+    const message = `Grok OAuth Proxy 설정 저장 · ${status.base} · ${model} · ${nextStep}`;
+    setLlmTestResult(status.running ? 'ok' : 'pending', message);
+    setApiPanelResult(status.running ? 'ok' : 'pending', message);
+    addMessage('system', 'Grok Proxy', `CLIProxyAPI 설정을 저장했습니다.\n${status.base}\n${nextStep}`);
+    if (status.running) await testLlmConnection();
+  } catch (error) {
+    setLlmTestResult('error', `Grok OAuth Proxy 설정 실패 · ${error.message}`);
+    setApiPanelResult('error', `Grok OAuth Proxy 설정 실패 · ${error.message}`);
+    addMessage('error', 'Grok Proxy', error.message);
+  } finally {
+    buttons.forEach((button) => { button.disabled = false; });
+  }
+}
+
+function openGrokProxyDocs() {
+  window.open('https://help.router-for.me/configuration/provider/xai', '_blank');
+  setApiPanelResult('pending', 'CLIProxyAPI Grok OAuth 문서를 열었습니다.');
+}
+
 async function createTask(event) {
   event.preventDefault();
   const context = $('taskTitle').value.trim();
   const title = context.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || '';
   if (!title) return;
+  state.taskAgentSelection = $('taskAgent').value;
   await api('/api/tasks', {
     method: 'POST',
     body: JSON.stringify({
       title,
       description: context,
-      agent: $('taskAgent').value,
-      priority: $('taskPriority').value
+      agent: state.taskAgentSelection,
+      priority: $('taskPriority').value,
+      autoRun: true
     })
   });
   $('taskTitle').value = '';
@@ -1278,11 +1565,12 @@ async function createApproval(event) {
   event.preventDefault();
   const title = $('approvalTitle').value.trim();
   if (!title) return;
+  state.approvalAgentSelection = $('approvalAgent').value;
   await api('/api/approvals', {
     method: 'POST',
     body: JSON.stringify({
       title,
-      agent: $('approvalAgent').value,
+      agent: state.approvalAgentSelection,
       kind: $('approvalKind').value.trim() || 'general',
       summary: $('approvalSummary').value.trim()
     })
@@ -1308,10 +1596,37 @@ async function searchBrain(event) {
   renderBrain(result.files || []);
 }
 
+async function autoResearch(source = 'web') {
+  const query = $('brainQuery').value.trim();
+  if (!query) return;
+  const box = $('brainResults');
+  const isXSearch = source === 'x';
+  const isThreadsSearch = source === 'threads';
+  const isYouTubeSearch = source === 'youtube';
+  const button = $(isXSearch ? 'xResearchButton' : isThreadsSearch ? 'threadsResearchButton' : isYouTubeSearch ? 'youtubeResearchButton' : 'autoResearchButton');
+  const sourceParam = isXSearch ? '&source=x' : isThreadsSearch ? '&source=threads' : isYouTubeSearch ? '&source=youtube' : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = isXSearch ? 'X Searching' : isThreadsSearch ? 'Threads Searching' : isYouTubeSearch ? 'YouTube Searching' : 'Researching';
+  }
+  box.innerHTML = `<div class="empty">${isXSearch ? 'X 검색 중...' : isThreadsSearch ? 'Threads 검색 중...' : isYouTubeSearch ? 'YouTube 검색 중...' : '리서치 중...'}</div>`;
+  try {
+    const result = await api(`/api/research?q=${encodeURIComponent(query)}${sourceParam}`);
+    renderResearch(result);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = isXSearch ? 'X Search' : isThreadsSearch ? 'Threads' : isYouTubeSearch ? 'YouTube' : 'Research';
+    }
+  }
+}
+
 async function sendMessage(message) {
+  if (state.isSendingMessage) return;
+  state.isSendingMessage = true;
   const selected = currentAgent();
   addMessage('user', 'You', message);
-  const pending = addMessage('system', selected ? selected.name : 'Connect AI', '생각 중...');
+  const pending = addMessage('assistant pending', selected ? selected.name : 'Connect AI', '답변 작성 중...');
   $('sendButton').disabled = true;
 
   try {
@@ -1326,21 +1641,41 @@ async function sendMessage(message) {
       })
     });
     state.sessionId = result.sessionId || state.sessionId;
-    pending.className = 'message';
-    const sources = result.sources && result.sources.length ? `\n\n출처\n${result.sources.join('\n')}` : '';
-    pending.innerHTML = `<div class="message-head">${escapeHtml(selected ? selected.name : 'Connect AI')}</div><div>${escapeHtml((result.text || '(빈 응답)') + sources)}</div>`;
+    const sourceItems = Array.isArray(result.sources)
+      ? result.sources.map((source) => typeof source === 'string' ? source : source.url || source.title || '').filter(Boolean)
+      : [];
+    const sources = sourceItems.length ? `\n\n출처\n${sourceItems.join('\n')}` : '';
+    setMessageContent(pending, 'assistant', selected ? selected.name : 'Connect AI', (result.text || '(빈 응답)') + sources);
     await refreshDashboard();
   } catch (error) {
-    pending.className = 'message error';
-    pending.innerHTML = `<div class="message-head">Error</div><div>${escapeHtml(error.message)}</div>`;
+    setMessageContent(pending, 'error', 'Error', error.message);
   } finally {
+    state.isSendingMessage = false;
     $('sendButton').disabled = false;
     $('chatLog').scrollTop = $('chatLog').scrollHeight;
   }
 }
 
+function resizeMessageInput() {
+  const input = $('messageInput');
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
+}
+
+function submitChatMessage() {
+  if (state.isComposingMessage || state.isSendingMessage) return;
+  const input = $('messageInput');
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  resizeMessageInput();
+  sendMessage(message);
+}
+
 function bindEvents() {
   $('sidebarToggle').addEventListener('click', toggleSidebar);
+  $('resultPanelToggle').addEventListener('click', toggleResultPanel);
   $('apiPanelToggle').addEventListener('click', openApiPanel);
   $('apiPanelClose').addEventListener('click', closeApiPanel);
   $('teamPrev').addEventListener('click', () => scrollTeam(-1));
@@ -1367,7 +1702,7 @@ function bindEvents() {
     const run = action === 'save-key'
       ? saveProviderKey(provider)
       : action === 'account'
-        ? startProviderAccountAuth(provider)
+        ? (provider === 'xai' ? applyGrokProxy() : startProviderAccountAuth(provider))
       : action === 'oauth'
         ? startProviderOAuth(provider)
         : action === 'test'
@@ -1376,6 +1711,10 @@ function bindEvents() {
             ? Promise.resolve(openProviderBilling(provider))
           : action === 'disconnect'
             ? disconnectProvider(provider)
+            : action === 'grok-proxy'
+              ? applyGrokProxy()
+              : action === 'grok-proxy-docs'
+                ? Promise.resolve(openGrokProxyDocs())
             : Promise.resolve();
     run.catch((error) => setApiPanelResult('error', error.message))
       .finally(() => { button.disabled = false; });
@@ -1410,34 +1749,71 @@ function bindEvents() {
   $('taskForm').addEventListener('submit', (event) => {
     createTask(event).catch((error) => addMessage('error', 'Task failed', error.message));
   });
+  $('taskAgent').addEventListener('change', (event) => {
+    state.taskAgentSelection = event.target.value;
+  });
   $('approvalForm').addEventListener('submit', (event) => {
     createApproval(event).catch((error) => addMessage('error', 'Approval failed', error.message));
+  });
+  $('approvalAgent').addEventListener('change', (event) => {
+    state.approvalAgentSelection = event.target.value;
   });
   $('brainSearchForm').addEventListener('submit', (event) => {
     searchBrain(event).catch((error) => addMessage('error', 'Search failed', error.message));
   });
+  $('autoResearchButton').addEventListener('click', () => {
+    autoResearch().catch((error) => {
+      renderResearch({ status: 'error', mode: 'web', count: 0, error: error.message, results: [], sources: [] });
+      addMessage('error', 'Research failed', error.message);
+    });
+  });
+  $('xResearchButton').addEventListener('click', () => {
+    autoResearch('x').catch((error) => {
+      renderResearch({ status: 'error', mode: 'x-grok-oauth-proxy', count: 0, error: error.message, results: [], sources: [] });
+      addMessage('error', 'X Search failed', error.message);
+    });
+  });
+  $('threadsResearchButton').addEventListener('click', () => {
+    autoResearch('threads').catch((error) => {
+      renderResearch({ status: 'error', mode: 'threads-web-search', count: 0, error: error.message, results: [], sources: [] });
+      addMessage('error', 'Threads Search failed', error.message);
+    });
+  });
+  $('youtubeResearchButton').addEventListener('click', () => {
+    autoResearch('youtube').catch((error) => {
+      renderResearch({ status: 'error', mode: 'youtube-web-search', count: 0, error: error.message, results: [], sources: [] });
+      addMessage('error', 'YouTube Search failed', error.message);
+    });
+  });
   $('chatForm').addEventListener('submit', (event) => {
     event.preventDefault();
-    const message = $('messageInput').value.trim();
-    if (!message) return;
-    $('messageInput').value = '';
-    sendMessage(message);
+    submitChatMessage();
   });
   $('messageInput').addEventListener('keydown', (event) => {
+    if (event.isComposing || state.isComposingMessage || event.keyCode === 229 || event.key === 'Process') return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
-      $('chatForm').requestSubmit();
+      submitChatMessage();
     }
   });
+  $('messageInput').addEventListener('compositionstart', () => {
+    state.isComposingMessage = true;
+  });
+  $('messageInput').addEventListener('compositionend', () => {
+    state.isComposingMessage = false;
+  });
+  $('messageInput').addEventListener('input', resizeMessageInput);
+  resizeMessageInput();
 }
 
 async function boot() {
   rememberInternalRoute();
   updateResultBackLink();
   loadOfficePositions();
+  applyDefaultLayoutState();
   loadSidebarState();
+  loadResultPanelState();
   bindEvents();
-  addMessage('system', 'Connect AI Web', '웹사이트 모드로 운영실을 시작했습니다.');
   await refreshDashboard();
   await refreshModels();
   await loadProviders();

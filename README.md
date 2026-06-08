@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.png" width="120" alt="Connect AI Logo" />
+  <img src="assets/extension-icon.png" width="120" alt="Connect AI Logo" />
 </p>
 
 <h1 align="center">Connect AI v2 (P-Reinforce)</h1>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.1.30-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-2.89.158-blue" alt="version" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
   <img src="https://img.shields.io/badge/integration-Agent_University-purple" alt="integration" />
   <img src="https://img.shields.io/badge/engine-Ollama%20%7C%20LM%20Studio-orange" alt="engine" />
@@ -70,10 +70,18 @@ git clone https://github.com/wonseokjung/connect-ai.git
 cd connect-ai
 npm install
 npm test
+npm run qa:all
 npm run package:vsix
 ```
 
 Codex로 작업할 때는 루트 `AGENTS.md`를 기준으로 프로젝트 구조와 검증 명령을 확인합니다.
+
+### 전체 QA
+```bash
+npm run qa:all
+```
+
+`qa:all`은 임시 standalone 웹 서버를 띄운 뒤 정적/보안 QA, 컴파일, 라이브 e2e, VSIX 패키징, 패키지 QA를 순서대로 실행합니다. `CONNECT_AI_QA_BASE_URL`을 지정하면 해당 서버로 e2e를 실행합니다. 오토 리서치 경로는 fixture, 빈 결과, 오류 상태, 실제 웹 검색 응답 계약, 출처 저장/export까지 검증합니다.
 
 ### 웹사이트로 실행 (VS Code 없이)
 ```bash

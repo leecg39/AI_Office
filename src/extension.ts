@@ -846,9 +846,8 @@ const WORLD_LAYOUT = {
   worldWidth: 1400,
   worldHeight: 700,
 
-  // Pre-built scene PNGs/GIFs anchored at fixed world pixel positions.
-  // Single office building — cafe + garden were rolled back. User will add
-  // back / build new maps themselves.
+  // Legacy pixel scene anchored at fixed world pixel positions. When the
+  // bundled pixel files are absent, assets/office.png is used as a full map.
   buildings: [
     {
       id: 'office', layer1: 'Office_Design_2.gif',
@@ -888,8 +887,8 @@ const WORLD_LAYOUT = {
   ] as WorldZone[],
 };
 
-/** Hand-tuned agent positions for the user's AI-generated office map at
- *  `assets/map.jpeg`. Coordinates are % of the world canvas — each places the
+/** Hand-tuned agent positions for the bundled/custom full-stage office map.
+ *  Coordinates are % of the world canvas — each places the
  *  agent at a real desk/seat in their room, avoiding walls and furniture.
  *  The y values anchor agent FEET (sprite is 96px tall, feet at bottom). */
 const CUSTOM_MAP_DESKS: Record<string, DeskPos> = {
@@ -5765,8 +5764,12 @@ function appendAgentMemory(agentId: string, line: string) {
    기존 폴더가 있으면 건드리지 않음 (사용자가 편집한 거 보호). */
 function _seedBundledTemplates(agentId: string, targetDir: string) {
   try {
-    const seedRoot = path.join(__dirname, '..', 'assets', 'brain-seeds', '40_템플릿', agentId);
-    if (!fs.existsSync(seedRoot)) return;
+    const seedRoot = [
+      path.join(__dirname, '..', 'assets', 'brain-seeds', 'templates', agentId),
+      path.join(__dirname, '..', 'assets', 'brain-seeds', '40_templates', agentId),
+      path.join(__dirname, '..', 'assets', 'brain-seeds', '40_템플릿', agentId),
+    ].find(p => fs.existsSync(p));
+    if (!seedRoot) return;
     fs.mkdirSync(targetDir, { recursive: true });
     const templates = fs.readdirSync(seedRoot, { withFileTypes: true }).filter(e => e.isDirectory());
     for (const tpl of templates) {
@@ -12856,8 +12859,8 @@ class OfficePanel {
         return '';
     }
 
-    /** 캐릭터 sprite를 결정. 우선순위: 사용자 LimeZu 폴더 > 번들 자산 > 빈 문자열(이모지 폴백) */
-    private _resolveCharacterSprite(agentId: string): { uri: string; source: 'user' | 'bundled' | 'none' } {
+    /** 캐릭터 sprite를 결정. 우선순위: 사용자 LimeZu 폴더 > assets/agents 초상화 > 번들 pixel sprite > 빈 문자열 */
+    private _resolveCharacterSprite(agentId: string): { uri: string; source: 'user' | 'profile' | 'bundled' | 'none' } {
         const userPath = OfficePanel._resolveUserAssetsPath();
         if (userPath) {
             const idx: Record<string, number> = {
@@ -12878,6 +12881,13 @@ class OfficePanel {
                         return { uri: this._panel.webview.asWebviewUri(vscode.Uri.file(file)).toString(), source: 'user' };
                     }
                 }
+            }
+        }
+        const profileImage = AGENTS[agentId]?.profileImage;
+        if (profileImage) {
+            const profile = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', profileImage);
+            if (fs.existsSync(profile.fsPath)) {
+                return { uri: this._panel.webview.asWebviewUri(profile).toString(), source: 'profile' };
             }
         }
         // 번들 자산 (vsix에 포함, 모든 사용자에게 동작)
@@ -12949,6 +12959,9 @@ class OfficePanel {
                 path.join(extAssets, 'office-map.png'),
                 path.join(extAssets, 'office-map.jpg'),
                 path.join(extAssets, 'office-map.jpeg'),
+                path.join(extAssets, 'office.png'),
+                path.join(extAssets, 'office.jpg'),
+                path.join(extAssets, 'office.jpeg'),
                 path.join(extAssets, 'map.png'),
                 path.join(extAssets, 'map.jpg'),
                 path.join(extAssets, 'map.jpeg'),
@@ -12988,10 +13001,11 @@ class OfficePanel {
         }));
         const dir = getCompanyDir();
         const userPath = OfficePanel._resolveUserAssetsPath();
+        const profileCount = Object.values(sources).filter(s => s === 'profile').length;
         const bundledCount = Object.values(sources).filter(s => s === 'bundled').length;
         const userCount = Object.values(sources).filter(s => s === 'user').length;
         // Phase-B-1 connected campus: Office + Cafe + Garden in one world.
-        // If user dropped a custom full-stage map (e.g. assets/map.jpeg),
+        // If user dropped a custom full-stage map or the bundled assets/office.png exists,
         // that single PNG replaces the procedural world (grass + buildings + decor)
         // AND we override desk positions with hand-tuned CUSTOM_MAP_DESKS so each
         // agent sits in the right room on the AI-generated map.
@@ -13012,6 +13026,7 @@ class OfficePanel {
             workdayOn,
             debug: {
                 userPath,
+                profileCount,
                 bundledCount,
                 userCount,
                 missing,
@@ -17387,23 +17402,19 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             this._view.webview.postMessage({
                                 type: 'corporateReady',
                                 agents: AGENT_ORDER.map(id => {
-                                    // Prefer high-res custom portrait if declared and the file exists,
-                                    // else fall back to the bundled pixel sprite.
+                                    // Prefer high-res custom portrait when it exists. When absent,
+                                    // send no image URI so the webview uses the emoji fallback.
                                     const customName = AGENTS[id].profileImage;
-                                    let portraitUri: vscode.Uri;
+                                    let portrait = '';
+                                    let portraitIsCustom = false;
                                     if (customName) {
                                         const customPath = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', customName);
                                         try {
                                             if (fs.existsSync(customPath.fsPath)) {
-                                                portraitUri = customPath;
-                                            } else {
-                                                portraitUri = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}.png`);
+                                                portrait = view.webview.asWebviewUri(customPath).toString();
+                                                portraitIsCustom = true;
                                             }
-                                        } catch {
-                                            portraitUri = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}.png`);
-                                        }
-                                    } else {
-                                        portraitUri = vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'pixel', 'characters', `${id}.png`);
+                                        } catch { /* emoji fallback */ }
                                     }
                                     return {
                                         id,
@@ -17413,8 +17424,8 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                         color: AGENTS[id].color,
                                         tagline: AGENTS[id].tagline,
                                         specialty: AGENTS[id].specialty,
-                                        portrait: view.webview.asWebviewUri(portraitUri).toString(),
-                                        portraitIsCustom: !!customName && fs.existsSync(vscode.Uri.joinPath(this._ctx.extensionUri, 'assets', 'agents', customName).fsPath),
+                                        portrait,
+                                        portraitIsCustom,
                                     };
                                 }),
                                 companyDir: dir.replace(os.homedir(), '~'),

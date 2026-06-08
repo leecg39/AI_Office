@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>완료 항목 · Connect AI Web</title>
-    <link rel="stylesheet" href="/styles.css?v=20260606-3">
+    <link rel="stylesheet" href="/styles.css?v=20260607-2">
   </head>
   <body class="completed-page">
     <main class="main completed-main">
@@ -25,7 +25,13 @@
               <div class="section-kicker">Done</div>
               <h2>결과 목록 <span id="completedCount" class="count-badge">0</span></h2>
             </div>
-            <button id="refreshCompleted" type="button" class="secondary small">Refresh</button>
+            <div class="completed-list-actions">
+              <label class="completed-select-all">
+                <input id="completedSelectAll" type="checkbox">
+                <span>전체</span>
+              </label>
+              <button id="deleteSelectedCompleted" type="button" class="secondary small danger-outline" disabled>삭제</button>
+            </div>
           </div>
           <div id="completedList" class="completed-list"></div>
         </aside>
@@ -35,6 +41,6 @@
         </section>
       </section>
     </main>
-    <script src="/completed.js?v=20260606-2"></script>
+    <script src="/completed.js?v=20260607-3"></script>
   </body>
 </html>

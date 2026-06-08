@@ -5,6 +5,9 @@
 .github/**
 .env
 .env.*
+**/.DS_Store
+web/config.local.json
+web/data/**
 ARCHITECTURE.md
 src/**
 # v2.89.84 — extension_download_site/ 와 releases/ 디렉토리 삭제됨.
@@ -15,7 +18,9 @@ system_schema.json
 **/*.md
 !readme.md
 !README.md
-!assets/**/*.md
+!assets/prompts/**/*.md
+!assets/tool-seeds/**/*.md
+!assets/brain-seeds/templates/**/*.md
 **/*.vsix
 node_modules/**
 !node_modules/axios/**
@@ -33,10 +38,19 @@ tsconfig.json
 *.vsix
 assets/icon.svg
 preview.html
-# Heavy LimeZu source packs — kept out of vsix (huge, ~1GB). The slim
-# office bundle at `assets/pixel/office/` ships instead, plus the 7
-# renamed character sprites at `assets/pixel/characters/*.png`.
-# Project owner has redistribution permission for the bundled subset.
+# Keep VSIX entry names ASCII-safe; runtime references the copied ASCII files.
+assets/agents/코다리.png
+assets/agents/현빈.jpeg
+assets/agents/영숙에이전트비서.jpeg
+assets/agents/코다리.png
+assets/agents/현빈.jpeg
+assets/agents/영숙에이전트비서.jpeg
+assets/brain-seeds/40_*/**
+assets/brain-seeds/40_템플릿/**
+assets/brain-seeds/40_템플릿/**
+# Heavy LimeZu source packs — kept out of vsix (huge, ~1GB). Runtime now
+# falls back to `assets/office.png` and `assets/agents/*` when pixel packs
+# are not present.
 **/moderninteriors-win/**
 **/modernexteriors-win/**
 **/Modern_Office_Revamped_v1/**

@@ -1,7 +1,8 @@
 const completedState = {
   agents: [],
   tasks: [],
-  selectedTaskId: ''
+  selectedTaskId: '',
+  selectedDeleteIds: new Set()
 };
 
 const $ = (id) => document.getElementById(id);
@@ -54,8 +55,11 @@ function fmtTime(value) {
   });
 }
 
-async function api(path) {
-  const response = await fetch(path);
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${response.status}`);
@@ -74,13 +78,34 @@ function taskAgent(task) {
   return completedState.agents.find((agent) => agent.id === task.agent) || {};
 }
 
+function pruneSelectedDeleteIds(tasks) {
+  const visibleIds = new Set(tasks.map((task) => task.id));
+  completedState.selectedDeleteIds.forEach((id) => {
+    if (!visibleIds.has(id)) completedState.selectedDeleteIds.delete(id);
+  });
+}
+
+function updateSelectionControls(tasks = completedTasks()) {
+  const allCheckbox = $('completedSelectAll');
+  const deleteButton = $('deleteSelectedCompleted');
+  if (!allCheckbox || !deleteButton) return;
+  const selectedCount = completedState.selectedDeleteIds.size;
+  allCheckbox.disabled = tasks.length === 0;
+  allCheckbox.checked = tasks.length > 0 && selectedCount === tasks.length;
+  allCheckbox.indeterminate = selectedCount > 0 && selectedCount < tasks.length;
+  deleteButton.disabled = selectedCount === 0;
+  deleteButton.setAttribute('aria-label', selectedCount ? `${selectedCount}개 항목 삭제` : '선택 항목 삭제');
+}
+
 function renderCompletedList() {
   const list = $('completedList');
   const tasks = completedTasks();
+  pruneSelectedDeleteIds(tasks);
   $('completedCount').textContent = String(tasks.length);
   if (!tasks.length) {
     list.innerHTML = '<div class="empty">완료된 작업이 없습니다.</div>';
     renderCompletedDetail(null);
+    updateSelectionControls(tasks);
     return;
   }
   if (!tasks.some((task) => task.id === completedState.selectedTaskId)) {
@@ -89,21 +114,28 @@ function renderCompletedList() {
   list.innerHTML = tasks.map((task) => {
     const agent = taskAgent(task);
     const selected = task.id === completedState.selectedTaskId ? ' selected' : '';
+    const checked = completedState.selectedDeleteIds.has(task.id) ? ' checked' : '';
     const resultState = task.result ? '결과 저장됨' : '결과 없음';
     return `
-      <a class="completed-item${selected}" href="#${encodeURIComponent(task.id)}" data-task-id="${escapeHtml(task.id)}">
-        <span class="agent-avatar small" style="--accent:${escapeHtml(agent.accent || '#35c8ff')}">
-          ${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="">` : `<span>${escapeHtml(agent.emoji || '')}</span>`}
-        </span>
-        <span class="completed-item-main">
-          <strong>${escapeHtml(task.title || '완료 작업')}</strong>
-          <span>${escapeHtml(agent.name || task.agent || 'Agent')} · ${escapeHtml(fmtTime(task.completedAt || task.updatedAt || task.createdAt))}</span>
-        </span>
-        <em>${escapeHtml(resultState)}</em>
-      </a>
+      <article class="completed-item${selected}" data-task-id="${escapeHtml(task.id)}">
+        <button class="completed-item-select" type="button" data-select-task="${escapeHtml(task.id)}">
+          <span class="agent-avatar small" style="--accent:${escapeHtml(agent.accent || '#35c8ff')}">
+            ${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="">` : `<span>${escapeHtml(agent.emoji || '')}</span>`}
+          </span>
+          <span class="completed-item-main">
+            <strong>${escapeHtml(task.title || '완료 작업')}</strong>
+            <span>${escapeHtml(agent.name || task.agent || 'Agent')} · ${escapeHtml(fmtTime(task.completedAt || task.updatedAt || task.createdAt))}</span>
+          </span>
+          <em>${escapeHtml(resultState)}</em>
+        </button>
+        <label class="completed-check" aria-label="${escapeHtml(`${task.title || '완료 작업'} 선택`)}">
+          <input class="completed-checkbox" type="checkbox" data-toggle-task="${escapeHtml(task.id)}"${checked}>
+        </label>
+      </article>
     `;
   }).join('');
   renderCompletedDetail(tasks.find((task) => task.id === completedState.selectedTaskId) || tasks[0]);
+  updateSelectionControls(tasks);
 }
 
 function selectCompletedTask(id, updateHash = true) {
@@ -144,6 +176,50 @@ function renderCompletedDetail(task) {
   `;
 }
 
+function setAllCompletedChecked(checked) {
+  const tasks = completedTasks();
+  completedState.selectedDeleteIds.clear();
+  if (checked) {
+    tasks.forEach((task) => completedState.selectedDeleteIds.add(task.id));
+  }
+  renderCompletedList();
+}
+
+function setCompletedChecked(id, checked) {
+  if (!id) return;
+  if (checked) {
+    completedState.selectedDeleteIds.add(id);
+  } else {
+    completedState.selectedDeleteIds.delete(id);
+  }
+  updateSelectionControls();
+}
+
+async function deleteSelectedCompletedTasks() {
+  const ids = Array.from(completedState.selectedDeleteIds);
+  if (!ids.length) return;
+  const count = ids.length;
+  if (typeof window.confirm === 'function' && !window.confirm(`선택한 ${count}개 항목을 삭제할까요?`)) return;
+  const button = $('deleteSelectedCompleted');
+  if (button) button.disabled = true;
+  try {
+    for (const id of ids) {
+      await api(`/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+  const deleted = new Set(ids);
+  completedState.selectedDeleteIds.clear();
+  completedState.tasks = completedState.tasks.filter((item) => !deleted.has(item.id));
+  if (deleted.has(completedState.selectedTaskId)) {
+    const next = completedTasks()[0];
+    completedState.selectedTaskId = next ? next.id : '';
+    window.history.replaceState(null, '', completedState.selectedTaskId ? `#${encodeURIComponent(completedState.selectedTaskId)}` : window.location.pathname);
+  }
+  renderCompletedList();
+}
+
 async function loadCompleted() {
   const [status, tasks] = await Promise.all([
     api('/api/status'),
@@ -159,17 +235,30 @@ async function loadCompleted() {
 document.addEventListener('DOMContentLoaded', () => {
   rememberInternalRoute();
   $('completedList').addEventListener('click', (event) => {
-    const item = event.target.closest('[data-task-id]');
-    if (!item) return;
+    if (event.target.closest('[data-toggle-task]') || event.target.closest('.completed-check')) {
+      event.stopPropagation();
+      return;
+    }
+    const selectButton = event.target.closest('[data-select-task]');
+    if (!selectButton) return;
     event.preventDefault();
-    selectCompletedTask(item.dataset.taskId || '');
+    selectCompletedTask(selectButton.dataset.selectTask || '');
+  });
+  $('completedList').addEventListener('change', (event) => {
+    const checkbox = event.target.closest('[data-toggle-task]');
+    if (!checkbox) return;
+    setCompletedChecked(checkbox.dataset.toggleTask || '', checkbox.checked);
   });
   window.addEventListener('hashchange', () => {
     selectCompletedTask(decodeURIComponent((window.location.hash || '').replace(/^#/, '')), false);
   });
-  $('refreshCompleted').addEventListener('click', () => {
-    loadCompleted().catch((error) => {
-      $('completedDetail').innerHTML = `<div class="empty">불러오기 실패: ${escapeHtml(error.message)}</div>`;
+  $('completedSelectAll').addEventListener('change', (event) => {
+    setAllCompletedChecked(event.target.checked);
+  });
+  $('deleteSelectedCompleted').addEventListener('click', () => {
+    deleteSelectedCompletedTasks().catch((error) => {
+      $('completedDetail').innerHTML = `<div class="empty">삭제 실패: ${escapeHtml(error.message)}</div>`;
+      updateSelectionControls();
     });
   });
   loadCompleted().catch((error) => {
