@@ -5099,6 +5099,7 @@ function ensureCompanyStructure(): string {
   fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'approvals', 'pending'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'approvals', 'history'), { recursive: true });
+  _seedAnntarOperatingSeedsIfMissing();
   AGENT_ORDER.forEach(id => {
     fs.mkdirSync(path.join(dir, '_agents', id), { recursive: true });
     _seedAgentGoalIfMissing(id);
@@ -5790,6 +5791,25 @@ function _copyDirRecursive(src: string, dst: string) {
     const d = path.join(dst, entry.name);
     if (entry.isDirectory()) _copyDirRecursive(s, d);
     else fs.copyFileSync(s, d);
+  }
+}
+
+/* Anntar/Paperclip 운영 원칙을 Connect AI Brain의 읽기 전용 시드로 이식.
+   기존 사용자 문서는 덮어쓰지 않는다. */
+function _seedAnntarOperatingSeedsIfMissing() {
+  try {
+    const src = path.join(__dirname, '..', 'assets', 'brain-seeds', 'anntar');
+    if (!fs.existsSync(src)) return;
+    const dst = path.join(_getBrainDir(), '30_운영', 'anntar');
+    fs.mkdirSync(dst, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const target = path.join(dst, entry.name);
+      if (fs.existsSync(target)) continue;
+      fs.copyFileSync(path.join(src, entry.name), target);
+    }
+  } catch (err) {
+    console.error('[Connect AI] Anntar 운영 시드 실패:', err);
   }
 }
 
@@ -12554,12 +12574,12 @@ async function fetchYouTubeAnalyticsSummary(): Promise<any> {
 }
 
 export function deactivate() {
-    try { _activeChatProvider?.stopAutoCycle?.(); } catch { /* ignore */ }
-    try { stopTelegramPolling(); } catch { /* ignore */ }
-    try { stopTrackerNudge(); } catch { /* ignore */ }
-    try { stopDailyBriefingLoop(); } catch { /* ignore */ }
-    try { stopRecurrenceLoop(); } catch { /* ignore */ }
-    try { stopPreAlarmLoop(); } catch { /* ignore */ }
+    try { _activeChatProvider?.stopAutoCycle?.(); } catch (e) { console.warn('[deactivate] stopAutoCycle failed:', e); }
+    try { stopTelegramPolling(); } catch (e) { console.warn('[deactivate] stopTelegramPolling failed:', e); }
+    try { stopTrackerNudge(); } catch (e) { console.warn('[deactivate] stopTrackerNudge failed:', e); }
+    try { stopDailyBriefingLoop(); } catch (e) { console.warn('[deactivate] stopDailyBriefingLoop failed:', e); }
+    try { stopRecurrenceLoop(); } catch (e) { console.warn('[deactivate] stopRecurrenceLoop failed:', e); }
+    try { stopPreAlarmLoop(); } catch (e) { console.warn('[deactivate] stopPreAlarmLoop failed:', e); }
 }
 
 // ============================================================
