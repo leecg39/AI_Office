@@ -1094,19 +1094,19 @@ function getCompanyDay(): number {
     } catch { return 1; }
 }
 
-function updateCompanyMetrics(updates: any) {
+function updateCompanyMetrics(updates: Record<string, unknown>) {
     try {
         const brain = _getBrainDir();
         /* v2.89.25 — 디렉토리 없으면 만들고 쓰기. 이전엔 brain 디렉토리가 첫 활성화
            시점에 없을 수 있어서 write 조용히 실패 → foundedAt 영원히 영속화 안 됨 →
            Day 카운터 매번 1로 재설정. */
-        try { fs.mkdirSync(brain, { recursive: true }); } catch { /* ignore */ }
+        try { fs.mkdirSync(brain, { recursive: true }); } catch (e) { console.warn('[updateCompanyMetrics] mkdir failed:', e instanceof Error ? e.message : String(e)); }
         const file = path.join(brain, 'company_state.json');
         const s = getCompanyMetrics();
         Object.assign(s, updates);
         fs.writeFileSync(file, JSON.stringify(s, null, 2));
-    } catch (e: any) {
-        console.warn('[updateCompanyMetrics] write failed:', e?.message || e);
+    } catch (e: unknown) {
+        console.warn('[updateCompanyMetrics] write failed:', e instanceof Error ? e.message : String(e));
     }
 }
 
