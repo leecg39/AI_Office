@@ -28,7 +28,7 @@ export interface AgentDef {
   persona?: string;
 }
 
-export const AGENTS: Record<string, AgentDef> = {
+export const AGENTS: Record<string, AgentDef> = Object.freeze({
   ceo: {
     id: 'ceo',
     name: 'Anna',
@@ -138,7 +138,7 @@ export const AGENTS: Record<string, AgentDef> = {
     profileImage: 'junghu_researcher.webp',
     persona: 'Paperclip 분석 담당 역할을 그대로 가져온다. 오늘 날짜, 최신 뉴스, 가격, 규정, 모델 정보처럼 변할 수 있는 내용은 반드시 실시간 확인한다. 접근 가능한 원문 URL만 남기고, 막힌 출처는 대체 출처와 실패 사유를 같이 보고한다.'
   }
-};
+});
 
 export const AGENT_ORDER = Object.freeze(['ceo', 'youtube', 'instagram', 'designer', 'developer', 'business', 'secretary', 'editor', 'writer', 'researcher']);
 export const SPECIALIST_IDS = Object.freeze(['youtube', 'instagram', 'designer', 'developer', 'business', 'secretary', 'editor', 'writer', 'researcher']);

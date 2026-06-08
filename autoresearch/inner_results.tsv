@@ -4,3 +4,4 @@ experiment	scope	delta_ignore_catch	compile_ok	web_check_ok	decision
 3	extension.ts(deactivate)	-6	1	1	KEEP
 4	extension.ts(metrics)	-1	1	1	KEEP
 5	extension.ts(setup)	0	1	1	KEEP
+6	agents.ts(AGENTS)	0	1	1	KEEP
