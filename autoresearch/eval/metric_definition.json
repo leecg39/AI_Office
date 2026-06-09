@@ -1,0 +1,11 @@
+{
+  "metrics": {
+    "compile_ok": { "type": "guard", "weight": 100, "direction": "maximize", "min": 1 },
+    "web_check_ok": { "type": "guard", "weight": 80, "direction": "maximize", "min": 1 },
+    "any_count": { "type": "verify", "weight": 30, "direction": "minimize", "baseline": 274 },
+    "ignore_catch_count": { "type": "verify", "weight": 30, "direction": "minimize", "baseline": 481 },
+    "cors_wildcard_count": { "type": "verify", "weight": 20, "direction": "minimize", "baseline": 1 },
+    "extension_ts_lines": { "type": "verify", "weight": 10, "direction": "minimize", "baseline": 21781 }
+  },
+  "formula": "(compile_ok * 100) + (web_check_ok * 80) - (any_count * 0.5) - (ignore_catch_count * 0.3) - (cors_wildcard_count * 20) - (extension_ts_lines * 0.001)"
+}
