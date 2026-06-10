@@ -13,8 +13,10 @@ Connect AI Lab은 VS Code/Cursor 확장 프로그램입니다. 로컬 LLM(Ollama
 - `src/agents.ts`: 에이전트 정의, 이름, 역할, 페르소나.
 - `src/paths.ts`: 두뇌 폴더와 회사 폴더 경로 결정.
 - `assets/webview/`: 사이드바/대시보드 webview HTML, JS, CSS.
-- `web/`: VS Code 없이 브라우저에서 실행하는 standalone 웹 앱.
-- `scripts/web-server.js`: standalone 웹 앱 서버와 `/api/status`, `/api/models`, `/api/chat` API.
+- `web/`: VS Code 없이 브라우저에서 실행하는 standalone 웹 앱 (레거시, fallback).
+- `scripts/web-server.js`: standalone 웹 앱 서버와 API (레거시).
+- `web-next/`: 기존 standalone 웹 앱을 Next.js 15 (App Router)로 마이그레이션한 프로젝트.
+- `src/lib/server/legacy-server.js`: 기존 `scripts/web-server.js`의 핵심 로직을 Next.js API Routes에서 재사용하기 위해 복사한 파일.
 - `assets/tool-seeds/`: 에이전트 도구 템플릿. 사용자의 로컬 자격증명은 여기에 넣지 않습니다.
 - `out/`: 빌드 결과물이며 `.gitignore` 대상입니다. 직접 수정하지 않습니다.
 
@@ -32,7 +34,9 @@ npm run package:vsix
 - `npm run compile`: `src/extension.ts`를 `out/extension.js`로 번들합니다.
 - `npm test`: 현재는 컴파일 검증을 표준 테스트 진입점으로 사용합니다.
 - `npm run qa:all`: 임시 standalone 웹 서버를 띄운 뒤 `web:check`, `npm test`, `web:e2e`, `package:vsix`, `package:qa`를 한 번에 실행합니다. `CONNECT_AI_QA_BASE_URL`을 지정하면 기존 서버를 대상으로 실행합니다.
-- `npm run web`: VS Code 확장 호스트 없이 `http://127.0.0.1:8788`에서 웹 앱을 실행합니다.
+- `npm run web`: VS Code 확장 호스트 없이 `http://127.0.0.1:8788`에서 레거시 웹 앱을 실행합니다.
+- `npm run web-next:dev`: Next.js 개발 서버를 실행합니다.
+- `npm run web-next:build`: Next.js 프로덕션 빌드를 수행합니다.
 - `npm run package:vsix`: 컴파일 후 VSIX 패키지를 만듭니다.
 - VS Code에서 직접 실행할 때는 `.vscode/launch.json`의 `Run Extension` 구성을 사용합니다.
 
@@ -47,4 +51,4 @@ npm run package:vsix
 
 ## 완료 기준
 
-코드 변경 후 최소 `npm test`를 통과시킵니다. standalone 웹 앱 변경이면 `npm run web:check`와 실제 `http://127.0.0.1:8788` 접속을 확인합니다. 패키징 또는 확장 설치 흐름을 건드렸다면 `npm run package:vsix`와 `npm run package:qa`까지 확인합니다. 오토 리서치, export, provider, 패키징을 함께 건드렸다면 `npm run qa:all`을 완료 기준으로 사용합니다. UI/webview 변경이면 가능하면 Extension Host에서 실제 사이드바 렌더링까지 확인합니다.
+코드 변경 후 최소 `npm test`를 통과시킵니다. standalone 웹 앱 변경이면 `npm run web:check`와 실제 `http://127.0.0.1:8788` 접속을 확인합니다. `web-next/` 변경이면 `cd web-next && npm run build`를 통과시키고, 개발 서버에서 UI와 API를 확인합니다. 패키징 또는 확장 설치 흐름을 건드렸다면 `npm run package:vsix`와 `npm run package:qa`까지 확인합니다. 오토 리서치, export, provider, 패키징을 함께 건드렸다면 `npm run qa:all`을 완료 기준으로 사용합니다. UI/webview 변경이면 가능하면 Extension Host에서 실제 사이드바 렌더링까지 확인합니다.

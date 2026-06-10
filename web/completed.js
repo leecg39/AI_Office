@@ -42,6 +42,33 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function repairSourceProtocol(value) {
+  return String(value || '').replace(/^(https?):\/(?!\/)/i, '$1://');
+}
+
+function splitTrailingSourcePunctuation(value) {
+  const match = String(value || '').match(/^(.+?)([.,;:!?)]*)$/);
+  return match ? { url: match[1], trailing: match[2] || '' } : { url: value, trailing: '' };
+}
+
+function sourceHref(value) {
+  const { url } = splitTrailingSourcePunctuation(repairSourceProtocol(value));
+  try {
+    const parsed = new URL(url);
+    return /^https?:$/i.test(parsed.protocol) ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function renderCompletedSource(source) {
+  const text = String(source || '').trim();
+  if (!text) return '';
+  const href = sourceHref(text);
+  if (!href) return `<span>${escapeHtml(text)}</span>`;
+  return `<a class="completed-source-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(text)}</a>`;
+}
+
 function fmtTime(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -154,7 +181,7 @@ function renderCompletedDetail(task) {
   }
   const agent = taskAgent(task);
   const sources = Array.isArray(task.sources) && task.sources.length
-    ? `<div class="completed-sources"><strong>Sources</strong>${task.sources.map((source) => `<span>${escapeHtml(source)}</span>`).join('')}</div>`
+    ? `<div class="completed-sources"><strong>Sources</strong>${task.sources.map(renderCompletedSource).join('')}</div>`
     : '';
   const result = task.result
     ? `<div class="completed-result">${escapeHtml(task.result)}</div>`

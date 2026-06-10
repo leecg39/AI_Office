@@ -9,6 +9,7 @@ const completedHtml = fs.readFileSync(path.join(ROOT, 'web', 'completed.html'), 
 const app = fs.readFileSync(path.join(ROOT, 'web', 'app.js'), 'utf8');
 const completedApp = fs.readFileSync(path.join(ROOT, 'web', 'completed.js'), 'utf8');
 const webServer = fs.readFileSync(path.join(ROOT, 'scripts', 'web-server.js'), 'utf8');
+const webServerRuntime = require(path.join(ROOT, 'scripts', 'web-server.js'));
 const css = fs.readFileSync(path.join(ROOT, 'web', 'styles.css'), 'utf8');
 const dom = new JSDOM(html);
 const document = dom.window.document;
@@ -54,36 +55,140 @@ async function waitFor(predicate, message, timeoutMs = 800) {
   throw new Error(message);
 }
 
-async function createRunningAppDom() {
+function agentManagementFixture(agentId, name) {
+  return {
+    tabs: [
+      { id: 'dashboard', label: '대시보드' },
+      { id: 'instructions', label: '지침' },
+      { id: 'skills', label: '스킬' },
+      { id: 'settings', label: '설정' },
+      { id: 'runs', label: '실행기록' },
+      { id: 'budget', label: '예산' }
+    ],
+    source: {
+      repository: 'paperclipai/paperclip',
+      url: 'https://github.com/paperclipai/paperclip.git',
+      docs: ['docs/api/agents.md', 'docs/specs/agent-config-ui.md', 'docs/api/costs.md']
+    },
+    overview: {
+      status: 'running',
+      adapterType: 'codex_local',
+      model: 'local:grok-4.3',
+      modelProfile: 'qa',
+      heartbeatIntervalSec: 300,
+      lastHeartbeatAt: '2026-06-07T00:00:00.000Z',
+      sessionId: `ses_${agentId}`,
+      openTasks: 1,
+      approvalsPending: 0
+    },
+    org: {
+      reportsTo: agentId === 'ceo' ? null : { id: 'ceo', name: 'Anna', role: 'CEO' },
+      directReports: agentId === 'ceo' ? [{ id: 'writer', name: 'Jenny', role: 'Copywriter' }] : []
+    },
+    instructions: {
+      primary: [`${name} QA instruction`],
+      operatingPolicy: '증거 기반 운영 원칙'
+    },
+    skills: [{ name: 'QA Skill', status: 'enabled', source: 'Paperclip import' }],
+    settings: {
+      identity: { name, role: 'QA', title: 'QA Agent', capabilities: 'QA management' },
+      adapter: { type: 'codex_local', model: 'local:grok-4.3', temperature: 0.2, contextMode: 'brain' },
+      heartbeat: { enabled: true, intervalSec: 300, wakeOnAssignment: true, wakeOnDemand: true },
+      runtime: { timeoutSec: 45, gracePeriodSec: 15, maxConcurrentRuns: 1 }
+    },
+    runs: [{
+      id: `task_${agentId}_run`,
+      title: `${name} QA run`,
+      status: 'done',
+      invocationSource: 'manual',
+      createdAt: '2026-06-07T00:00:00.000Z',
+      updatedAt: '2026-06-07T00:01:00.000Z',
+      inputTokens: 1000,
+      outputTokens: 300,
+      costCents: 12,
+      summary: 'QA run completed'
+    }],
+    budget: {
+      monthlyCents: 5000,
+      spentCents: 1200,
+      percent: 24,
+      policy: '80% 소프트 알림, 100% 하드 스톱'
+    }
+  };
+}
+
+async function createRunningAppDom(appOptions = {}) {
   const runtime = new JSDOM(html, {
     runScripts: 'outside-only',
     url: 'http://127.0.0.1:8788/',
     pretendToBeVisual: true
   });
   const calls = [];
+  const configWrites = [];
+  const agentPatchWrites = [];
+  let configFixture = {
+    ollamaBase: 'http://127.0.0.1:8317/v1',
+    defaultModel: 'local:grok-4.3',
+    localBrainPath: '/Users/qa/connect-ai-brain'
+  };
+  let dashboardCallCount = 0;
   runtime.window.setInterval = () => 0;
   runtime.window.fetch = async (requestPath, options = {}) => {
     const url = String(requestPath);
+    const method = String(options.method || 'GET').toUpperCase();
     calls.push(url);
+    if (method !== 'GET') calls.push(`${method} ${url}`);
     if (url === '/api/dashboard') {
-      return mockResponse({
+      const dashboardFixture = Array.isArray(appOptions.dashboards)
+        ? appOptions.dashboards[Math.min(dashboardCallCount, appOptions.dashboards.length - 1)]
+        : appOptions.dashboard;
+      dashboardCallCount += 1;
+      return mockResponse(dashboardFixture || {
         ok: true,
         version: 'qa',
-        config: { defaultModel: 'local:grok-4.3' },
+        config: { ...configFixture },
         brain: { fileCount: 1, capped: false },
         agents: [
-          { id: 'ceo', name: 'Anna', role: 'CEO', avatar: '', active: true, openTasks: 0 },
-          { id: 'writer', name: 'Jenny', role: 'Copywriter', avatar: '', active: true, openTasks: 0 }
+          { id: 'ceo', name: 'Anna', role: 'CEO', avatar: '', active: true, openTasks: 0, management: agentManagementFixture('ceo', 'Anna') },
+          { id: 'writer', name: 'Jenny', role: 'Copywriter', avatar: '', active: true, openTasks: 0, goal: '', management: agentManagementFixture('writer', 'Jenny') }
         ],
         tasks: { open: 0, all: [] },
         approvals: { pending: 0, all: [] },
         events: []
       });
     }
+    if (url.startsWith('/api/agents/') && method === 'PATCH') {
+      agentPatchWrites.push({
+        id: url.split('/').pop(),
+        body: JSON.parse(options.body || '{}')
+      });
+      return mockResponse({ ok: true, agent: { id: url.split('/').pop(), active: true } });
+    }
+    if (url === '/api/config' && method === 'POST') {
+      const payload = JSON.parse(options.body || '{}');
+      configWrites.push(payload);
+      configFixture = {
+        ...configFixture,
+        ...payload
+      };
+      return mockResponse({ ok: true, config: { ...configFixture } });
+    }
+    if (url === '/api/llm/test' && method === 'POST') {
+      const payload = JSON.parse(options.body || '{}');
+      return mockResponse({
+        ok: true,
+        connected: true,
+        provider: 'QA LLM',
+        model: payload.model || configFixture.defaultModel,
+        upstreamModel: payload.model || configFixture.defaultModel,
+        latencyMs: 12,
+        stages: [{ name: 'chat', ok: true }]
+      });
+    }
     if (url === '/api/models') {
       return mockResponse({
         ok: true,
-        defaultModel: 'local:grok-4.3',
+        defaultModel: configFixture.defaultModel || 'local:grok-4.3',
         models: [
           { id: 'local:grok-4.3', provider: 'local', model: 'grok-4.3' },
           { id: 'local:grok-imagine-image', provider: 'local', model: 'grok-imagine-image' },
@@ -156,6 +261,38 @@ async function createRunningAppDom() {
           }]
         });
       }
+      if (url.includes('source=instagram')) {
+        return mockResponse({
+          ok: true,
+          query: 'QA_AUTO_RESEARCH_FIXTURE',
+          mode: 'instagram-web-search-mock',
+          status: 'ok',
+          searchedAt: '2026-06-07T00:00:00.000Z',
+          count: 1,
+          sources: ['https://www.instagram.com/blackpinkofficial/'],
+          results: [{
+            title: 'Instagram Fixture',
+            url: 'https://www.instagram.com/blackpinkofficial/',
+            snippet: 'Instagram web search fixture.'
+          }]
+        });
+      }
+      if (url.includes('source=linkedin')) {
+        return mockResponse({
+          ok: true,
+          query: 'QA_AUTO_RESEARCH_FIXTURE',
+          mode: 'linkedin-web-search-mock',
+          status: 'ok',
+          searchedAt: '2026-06-07T00:00:00.000Z',
+          count: 1,
+          sources: ['https://www.linkedin.com/company/connect-ai-qa/'],
+          results: [{
+            title: 'LinkedIn Fixture',
+            url: 'https://www.linkedin.com/company/connect-ai-qa/',
+            snippet: 'LinkedIn web search fixture.'
+          }]
+        });
+      }
       if (url.includes('source=x')) {
         return mockResponse({
           ok: true,
@@ -223,7 +360,7 @@ async function createRunningAppDom() {
   };
   runtime.window.eval(app);
   await waitFor(() => runtime.window.document.querySelector('#modelSelect option'), 'App did not boot model selector');
-  return { calls, window: runtime.window, document: runtime.window.document };
+  return { calls, configWrites, agentPatchWrites, window: runtime.window, document: runtime.window.document };
 }
 
 async function createRunningCompletedDom() {
@@ -240,6 +377,11 @@ async function createRunningCompletedDom() {
       title: 'QA 완료 항목 1',
       agent: 'writer',
       result: '첫 번째 완료 결과',
+      sources: [
+        'https://example.com/connect-ai/source-one',
+        'https://example.com/connect-ai/source-two.',
+        'not-a-url'
+      ],
       completedAt: '2026-06-07T06:00:00.000Z'
     },
     {
@@ -291,12 +433,15 @@ async function main() {
     [
       'apiPanel',
       'apiProviderList',
+      'brandHome',
       'modelSelect',
       'brainSearchForm',
       'brainQuery',
       'autoResearchButton',
       'xResearchButton',
       'threadsResearchButton',
+      'instagramResearchButton',
+      'linkedinResearchButton',
       'youtubeResearchButton',
       'brainResults',
       'taskForm',
@@ -310,6 +455,63 @@ async function main() {
     assert(panel.classList.contains('hidden'), 'API panel should start hidden');
     assert(panel.getAttribute('aria-hidden') === 'true', 'API panel should start aria-hidden');
     assert(document.querySelector('#apiPanel section[role="dialog"]'), 'API panel dialog role is missing');
+  });
+
+  await check('api settings save posts config and reports success', async () => {
+    const runtime = await createRunningAppDom();
+    runtime.document.querySelector('#apiPanelToggle').click();
+    await waitFor(
+      () => !runtime.document.querySelector('#apiPanel').classList.contains('hidden'),
+      'API panel did not open'
+    );
+    runtime.document.querySelector('#ollamaBase').value = 'http://127.0.0.1:8317/v1';
+    runtime.document.querySelector('#modelSelect').value = 'zai:glm-5.1';
+    runtime.document.querySelector('#brainPath').value = '/Users/qa/brain-saved';
+    runtime.document.querySelector('#saveConfig').click();
+    await waitFor(
+      () => runtime.calls.includes('POST /api/config'),
+      'Config save API was not called'
+    );
+    await waitFor(
+      () => runtime.document.querySelector('#apiPanelResult').textContent.includes('저장 완료'),
+      'Config save success was not shown in the API panel'
+    );
+    assert(runtime.configWrites.length === 1, 'Config save payload was not captured');
+    assert(runtime.configWrites[0].ollamaBase === 'http://127.0.0.1:8317/v1', 'Saved LLM URL payload is wrong');
+    assert(runtime.configWrites[0].defaultModel === 'zai:glm-5.1', 'Saved model payload is wrong');
+    assert(runtime.configWrites[0].localBrainPath === '/Users/qa/brain-saved', 'Saved brain path payload is wrong');
+    assert(runtime.document.querySelector('#modelSelect').value === 'zai:glm-5.1', 'Saved model did not stay selected');
+    assert(runtime.document.querySelector('#saveConfig').textContent === 'Save', 'Save button label did not recover');
+    assert(!runtime.document.querySelector('#saveConfig').disabled, 'Save button stayed disabled');
+  });
+
+  await check('refresh applies the last successful LLM Test model', async () => {
+    const runtime = await createRunningAppDom();
+    runtime.document.querySelector('#apiPanelToggle').click();
+    await waitFor(
+      () => !runtime.document.querySelector('#apiPanel').classList.contains('hidden'),
+      'API panel did not open for model refresh'
+    );
+    runtime.document.querySelector('#modelSelect').value = 'zai:glm-5.1';
+    runtime.document.querySelector('#testLlm').click();
+    await waitFor(
+      () => runtime.document.querySelector('#llmTestResult').textContent.includes('연결 성공'),
+      'LLM Test success was not shown'
+    );
+    await waitFor(
+      () => runtime.calls.filter((url) => url === '/api/dashboard').length >= 2,
+      'Dashboard was not refreshed after LLM Test'
+    );
+    assert(runtime.document.querySelector('#modelSelect').value === 'local:grok-4.3', 'Dashboard refresh fixture should restore the old saved model before Refresh');
+    runtime.document.querySelector('#refreshModels').click();
+    await waitFor(
+      () => runtime.document.querySelector('#apiPanelResult').textContent.includes('LLM Test 성공 모델을 반영했습니다.'),
+      'Refresh did not report successful model application'
+    );
+    assert(runtime.configWrites.some((payload) => payload.defaultModel === 'zai:glm-5.1'), 'Refresh did not persist the successful LLM Test model');
+    assert(runtime.document.querySelector('#modelSelect').value === 'zai:glm-5.1', 'Refresh did not keep the successful model selected');
+    assert(runtime.document.querySelector('#refreshModels').textContent === 'Refresh', 'Refresh button label did not recover');
+    assert(!runtime.document.querySelector('#refreshModels').disabled, 'Refresh button stayed disabled');
   });
 
   await check('default layout shows left and center with result panel collapsed', async () => {
@@ -341,6 +543,181 @@ async function main() {
     assert(select.value === 'writer', `Task agent should remain writer, got ${select.value}`);
   });
 
+  await check('team carousel agent click stays on dashboard', async () => {
+    const runtime = await createRunningAppDom();
+    const writerCard = [...runtime.document.querySelectorAll('#teamGrid .team-card')]
+      .find((button) => button.textContent.includes('Jenny'));
+    assert(writerCard, 'Jenny team card is missing');
+    writerCard.click();
+    await waitFor(
+      () => runtime.document.querySelector('#selectedAgentName').textContent === 'Jenny',
+      'Team card did not update the selected dashboard agent'
+    );
+    assert(runtime.window.location.hash === '', 'Team card click should not open an agent route');
+    assert(!runtime.document.querySelector('#dashboardView').classList.contains('hidden'), 'Dashboard view should stay visible after team card click');
+    assert(runtime.document.querySelector('#agentManagerView').classList.contains('hidden'), 'Agent manager should stay hidden after team card click');
+  });
+
+  await check('agent sidebar opens Paperclip-style management pages', async () => {
+    const runtime = await createRunningAppDom();
+    const writerAgent = [...runtime.document.querySelectorAll('#agentList .agent')]
+      .find((button) => button.textContent.includes('Jenny'));
+    assert(writerAgent, 'Writer agent button is missing');
+    writerAgent.click();
+    await waitFor(() => runtime.window.location.hash === '#agent/writer/dashboard', 'Agent click did not navigate to management route');
+    assert(runtime.document.querySelector('#dashboardView').classList.contains('hidden'), 'Dashboard view should hide on agent management route');
+    assert(!runtime.document.querySelector('#agentManagerView').classList.contains('hidden'), 'Agent management view should be visible');
+    assert(runtime.document.body.textContent.includes('Agent Management'), 'Agent management header is missing');
+    assert(runtime.document.body.textContent.includes('대시보드'), 'Agent dashboard tab is missing');
+    assert(runtime.document.body.textContent.includes('지침'), 'Agent instructions tab is missing');
+    assert(runtime.document.body.textContent.includes('스킬'), 'Agent skills tab is missing');
+    assert(runtime.document.body.textContent.includes('설정'), 'Agent settings tab is missing');
+    assert(runtime.document.body.textContent.includes('실행기록'), 'Agent runs tab is missing');
+    assert(runtime.document.body.textContent.includes('예산'), 'Agent budget tab is missing');
+
+    runtime.document.querySelector('[data-agent-tab="instructions"]').click();
+    await waitFor(() => runtime.window.location.hash === '#agent/writer/instructions', 'Instructions tab did not update route');
+    assert(runtime.document.body.textContent.includes('Jenny QA instruction'), 'Agent instructions content did not render');
+    assert(runtime.document.body.textContent.includes('paperclipai/paperclip'), 'Paperclip source reference is missing');
+    runtime.document.querySelector('#agentInstructionInput').value = '첫 번째 QA 지침\n두 번째 QA 지침';
+    runtime.document.querySelector('#agentPolicyInput').value = 'QA 운영 원칙 업데이트';
+    runtime.document.querySelector('[data-agent-save="instructions"]').click();
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.instructions), 'Agent instructions PATCH was not captured');
+    const instructionsPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.instructions);
+    assert(instructionsPatch.body.management.instructions.primary.length === 2, 'Agent instructions should save newline-separated primary rules');
+    assert(instructionsPatch.body.management.instructions.operatingPolicy === 'QA 운영 원칙 업데이트', 'Agent operating policy payload is wrong');
+
+    runtime.document.querySelector('[data-agent-tab="skills"]').click();
+    await waitFor(() => runtime.window.location.hash === '#agent/writer/skills', 'Skills tab did not update route');
+    runtime.document.querySelector('[data-agent-skill-add]').click();
+    const skillRows = runtime.document.querySelectorAll('#agentSkillsEditor [data-skill-row]');
+    const addedSkill = skillRows[skillRows.length - 1];
+    addedSkill.querySelector('.manager-skill-name').value = 'QA 신규 스킬';
+    addedSkill.querySelector('.manager-skill-source').value = 'QA Source';
+    addedSkill.querySelector('.manager-skill-status').value = 'disabled';
+    runtime.document.querySelector('[data-agent-save="skills"]').click();
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.skills), 'Agent skills PATCH was not captured');
+    const skillsPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.skills);
+    assert(skillsPatch.body.management.skills.some((skill) => skill.name === 'QA 신규 스킬' && skill.status === 'disabled'), 'Agent skills payload is wrong');
+
+    runtime.document.querySelector('[data-agent-tab="settings"]').click();
+    await waitFor(() => runtime.window.location.hash === '#agent/writer/settings', 'Settings tab did not update route');
+    runtime.document.querySelector('#agentGoalInput').value = 'QA 관리 목표';
+    runtime.document.querySelector('#agentAdapterModel').value = 'local:qa-edit-model';
+    runtime.document.querySelector('#agentAdapterTemperature').value = '0.45';
+    runtime.document.querySelector('#agentHeartbeatEnabled').checked = false;
+    runtime.document.querySelector('[data-agent-save="settings"]').click();
+    await waitFor(() => runtime.calls.includes('PATCH /api/agents/writer'), 'Agent settings PATCH was not called');
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.settings), 'Agent settings PATCH was not captured');
+    const settingsPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.settings);
+    assert(settingsPatch.body.goal === 'QA 관리 목표', 'Agent goal payload is wrong');
+    assert(settingsPatch.body.management.settings.adapter.model === 'local:qa-edit-model', 'Agent adapter model payload is wrong');
+    assert(settingsPatch.body.management.settings.adapter.temperature === 0.45, 'Agent adapter temperature payload is wrong');
+    assert(settingsPatch.body.management.settings.heartbeat.enabled === false, 'Agent heartbeat payload is wrong');
+
+    runtime.document.querySelector('[data-agent-tab="budget"]').click();
+    await waitFor(() => runtime.window.location.hash === '#agent/writer/budget', 'Budget tab did not update route');
+    assert(runtime.document.body.textContent.includes('$12.00 / $50.00'), 'Agent budget summary did not render');
+    runtime.document.querySelector('#agentBudgetMonthlyDollars').value = '88.25';
+    runtime.document.querySelector('#agentBudgetSoftAlert').value = '70';
+    runtime.document.querySelector('#agentBudgetHardStop').value = '95';
+    runtime.document.querySelector('#agentBudgetPolicy').value = 'QA budget policy';
+    runtime.document.querySelector('[data-agent-save="budget"]').click();
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.budget), 'Agent budget PATCH was not captured');
+    const budgetPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.budget);
+    assert(budgetPatch.body.management.budget.monthlyCents === 8825, 'Agent monthly budget payload is wrong');
+    assert(budgetPatch.body.management.budget.softAlertPercent === 70, 'Agent soft alert payload is wrong');
+    assert(budgetPatch.body.management.budget.hardStopPercent === 95, 'Agent hard stop payload is wrong');
+  });
+
+  await check('brand logo returns from agent page to dashboard home', async () => {
+    const runtime = await createRunningAppDom();
+    const writerAgent = [...runtime.document.querySelectorAll('#agentList .agent')]
+      .find((button) => button.textContent.includes('Jenny'));
+    assert(writerAgent, 'Writer agent button is missing for logo home check');
+    writerAgent.click();
+    await waitFor(() => runtime.window.location.hash === '#agent/writer/dashboard', 'Agent page did not open before logo home check');
+    runtime.document.querySelector('#brandHome').click();
+    await waitFor(() => runtime.window.location.hash === '', 'Brand logo did not clear the agent route');
+    assert(!runtime.document.querySelector('#dashboardView').classList.contains('hidden'), 'Dashboard view should be visible after logo home click');
+    assert(runtime.document.querySelector('#agentManagerView').classList.contains('hidden'), 'Agent management view should hide after logo home click');
+    assert(runtime.document.querySelector('#companyName').textContent === 'AI Company', 'Company title did not return to home state');
+  });
+
+  await check('terminal 100 percent tasks stay listed until manual refresh', async () => {
+    const taskId = 'task_qa_done_100';
+    const activeTask = {
+      id: taskId,
+      title: 'QA terminal task should stay listed',
+      agent: 'writer',
+      priority: 'urgent',
+      status: 'running',
+      progress: {
+        percent: 92,
+        label: '검토 중',
+        activity: '결과 생성 대기',
+        timeline: [
+          { key: 'queued', label: '요청 접수', done: true, current: false },
+          { key: 'review', label: '결과 정리', done: true, current: true }
+        ]
+      }
+    };
+    const terminalTask = {
+      id: taskId,
+      title: activeTask.title,
+      agent: 'writer',
+      priority: 'urgent',
+      status: 'failed',
+      error: 'QA timeout',
+      progress: {
+        percent: 100,
+        label: '오류',
+        activity: '작업 실행 중 오류가 발생했습니다.',
+        timeline: [
+          { key: 'queued', label: '요청 접수', done: true, current: false },
+          { key: 'done', label: '오류', done: true, current: true }
+        ]
+      }
+    };
+    const dashboardBase = {
+      ok: true,
+      version: 'qa',
+      config: { defaultModel: 'local:grok-4.3' },
+      brain: { fileCount: 1, capped: false },
+      agents: [
+        { id: 'ceo', name: 'Anna', role: 'CEO', avatar: '', active: true, openTasks: 0 },
+        { id: 'writer', name: 'Jenny', role: 'Copywriter', avatar: '', active: true, openTasks: 0 }
+      ],
+      approvals: { pending: 0, all: [] },
+      events: []
+    };
+    const runtime = await createRunningAppDom({
+      dashboards: [
+        { ...dashboardBase, tasks: { open: 1, all: [activeTask] } },
+        { ...dashboardBase, tasks: { open: 0, all: [terminalTask] } },
+        { ...dashboardBase, tasks: { open: 0, all: [terminalTask] } }
+      ]
+    });
+    await runtime.window.refreshDashboard();
+    const retainedListText = runtime.document.querySelector('#taskList').textContent || '';
+    const retainedDetailText = runtime.document.querySelector('#taskDetail').textContent || '';
+    assert(retainedListText.includes(activeTask.title), 'Terminal 100% task should remain as a list row after non-manual refresh');
+    assert(!retainedDetailText.includes(activeTask.title), 'Terminal 100% task should not remain in progress detail');
+    assert(retainedDetailText.includes('작업을 선택하면 진행 상황이 표시됩니다.'), 'Progress detail should show empty prompt for terminal-only queue');
+
+    runtime.document.querySelector('#refreshDashboard').click();
+    await waitFor(
+      () => (runtime.document.querySelector('#taskList').textContent || '').includes('열린 작업이 없습니다.'),
+      'Manual refresh did not clear terminal task fixture'
+    );
+    const taskListText = runtime.document.querySelector('#taskList').textContent || '';
+    const taskDetailText = runtime.document.querySelector('#taskDetail').textContent || '';
+    assert(taskListText.includes('열린 작업이 없습니다.'), 'Manual refresh should clear terminal 100% task from work queue');
+    assert(taskDetailText.includes('작업을 선택하면 진행 상황이 표시됩니다.'), 'Terminal 100% task should not remain in progress detail');
+    assert(!taskListText.includes(activeTask.title), 'Terminal task title still appears in work queue after manual refresh');
+    assert(!taskDetailText.includes(activeTask.title), 'Terminal task title still appears in progress detail after manual refresh');
+  });
+
   await check('task creation auto-runs and review-stage tasks are recovered', () => {
     assert(app.includes('autoRun: true'), 'Task form should request automatic execution');
     assert(webServer.includes('const taskRunQueue = new Map()'), 'Task run queue is missing');
@@ -348,6 +725,36 @@ async function main() {
     assert(webServer.includes('taskProgress(task).percent >= 92'), '92% review-stage tasks are not recovered');
     assert(webServer.includes("task.status = 'failed'"), 'Failed task terminal state is missing');
     assert(webServer.includes("task.status = 'done'"), 'Done task terminal state is missing');
+  });
+
+  await check('anntar migration policy is available to standalone web', () => {
+    assert(webServer.includes('function seedBundledAnntarBrainSeeds'), 'Anntar seed copier is missing');
+    assert(webServer.includes("'brain-seeds', 'anntar'"), 'Anntar seed source path is missing');
+    assert(webServer.includes("30_운영', 'anntar'"), 'Anntar seed target path is missing');
+    assert(webServer.includes("id: 'instagram'"), 'Standalone Instagram agent is missing');
+    assert(webServer.includes('증거 기반 운영 원칙'), 'Standalone task prompt policy is missing');
+  });
+
+  await check('instagram tasks are routed through automatic research', () => {
+    assert(webServer.includes('function runInstagramResearch'), 'Instagram research runner is missing');
+    assert(webServer.includes('if (!source) source = researchSourceFromText(cleanQuery);'), 'Automatic research source detection is missing');
+    assert(webServer.includes("source === 'instagram' || source === 'ig'"), 'Instagram source route is missing');
+    assert(webServer.includes("String(agent || '').toLowerCase() === 'instagram'"), 'Instagram agent source detection is missing');
+    assert(webServer.includes('인스타\\s*그램'), 'Korean Instagram source detection is missing');
+    assert(webServer.includes('instagram-web-search'), 'Instagram research mode is missing');
+    assert(webServerRuntime.researchSourceFromText('인스타 그램에서 블랙핑크 공식 계정 찾아줘') === 'instagram', 'Spaced Korean Instagram text was not detected');
+    assert(webServerRuntime.researchSourceFromAgent('instagram') === 'instagram', 'Instagram agent was not detected as a source');
+    assert(webServerRuntime.requestedResearchLimit('인스타그램에서 블랙핑크 공식 계정 찾아서 1주일 행적을 요약해줘', 4) === 4, 'One-week duration should not reduce research limit to 1');
+    assert(webServerRuntime.requestedResearchLimit('유튜브 AI 뉴스 10가지 찾아줘', 4) === 10, 'Explicit result count should still set research limit');
+  });
+
+  await check('linkedin research source is routed through automatic research', () => {
+    assert(webServer.includes('function runLinkedInResearch'), 'LinkedIn research runner is missing');
+    assert(webServer.includes("source === 'linkedin' || source === 'li'"), 'LinkedIn source route is missing');
+    assert(webServer.includes('linkedin-web-search'), 'LinkedIn research mode is missing');
+    assert(webServer.includes('링크드\\s*인'), 'Korean LinkedIn source detection is missing');
+    assert(webServerRuntime.researchSourceFromText('링크드인에서 Connect AI 회사 계정 찾아줘') === 'linkedin', 'Korean LinkedIn text was not detected');
+    assert(webServerRuntime.researchSourceFromText('linkedin에서 AI founder 찾아줘') === 'linkedin', 'English LinkedIn text was not detected');
   });
 
   await check('chat starts without boot announcement', async () => {
@@ -397,15 +804,16 @@ async function main() {
     assert(form.querySelector('#autoResearchButton'), 'Research button is missing from form');
     assert(form.querySelector('#xResearchButton'), 'X Search button is missing from form');
     assert(form.querySelector('#threadsResearchButton'), 'Threads button is missing from form');
+    assert(form.querySelector('#instagramResearchButton'), 'Instagram button is missing from form');
+    assert(form.querySelector('#linkedinResearchButton'), 'LinkedIn button is missing from form');
     assert(form.querySelector('#youtubeResearchButton'), 'YouTube button is missing from form');
     assert(app.includes("api(`/api/research?q=${encodeURIComponent(query)}${sourceParam}`)"), 'autoResearch does not call /api/research');
-    assert(app.includes("const sourceParam = isXSearch ? '&source=x' : isThreadsSearch ? '&source=threads' : isYouTubeSearch ? '&source=youtube' : '';"), 'Research source parameter routing is missing');
-    assert(app.includes("isThreadsSearch ? '&source=threads'"), 'Threads source parameter is missing');
-    assert(app.includes("isYouTubeSearch ? '&source=youtube'"), 'YouTube source parameter is missing');
-    assert(app.includes("isThreadsSearch ? 'Threads Searching'"), 'Threads loading state is missing');
-    assert(app.includes("isYouTubeSearch ? 'YouTube Searching'"), 'YouTube loading state is missing');
-    assert(app.includes("isThreadsSearch ? 'Threads'"), 'Threads restore state is missing');
-    assert(app.includes("isYouTubeSearch ? 'YouTube'"), 'YouTube restore state is missing');
+    assert(app.includes("instagram: { button: 'instagramResearchButton', param: '&source=instagram'"), 'Instagram source parameter is missing');
+    assert(app.includes("linkedin: { button: 'linkedinResearchButton', param: '&source=linkedin'"), 'LinkedIn source parameter is missing');
+    assert(app.includes("threads: { button: 'threadsResearchButton', param: '&source=threads'"), 'Threads source parameter is missing');
+    assert(app.includes("youtube: { button: 'youtubeResearchButton', param: '&source=youtube'"), 'YouTube source parameter is missing');
+    assert(app.includes('Instagram Searching'), 'Instagram loading state is missing');
+    assert(app.includes('LinkedIn Searching'), 'LinkedIn loading state is missing');
   });
 
   await check('research renderer includes source-safe cards', () => {
@@ -459,6 +867,34 @@ async function main() {
     assert(link.getAttribute('href').startsWith('https://www.threads.net/search?'), 'Threads result should point to Threads');
     assert(runtime.calls.some((url) => url.includes('source=threads')), 'Threads API was not called with source=threads');
     assert(runtime.document.querySelector('#threadsResearchButton').textContent === 'Threads', 'Threads button did not recover');
+  });
+
+  await check('instagram button uses instagram research mode', async () => {
+    const runtime = await createRunningAppDom();
+    runtime.document.querySelector('#brainQuery').value = 'QA_AUTO_RESEARCH_FIXTURE';
+    runtime.document.querySelector('#instagramResearchButton').click();
+    await waitFor(
+      () => runtime.document.querySelector('#brainResults .research-result a'),
+      'Instagram result card was not rendered'
+    );
+    const link = runtime.document.querySelector('#brainResults .research-result a');
+    assert(link.getAttribute('href').startsWith('https://www.instagram.com/'), 'Instagram result should point to Instagram');
+    assert(runtime.calls.some((url) => url.includes('source=instagram')), 'Instagram API was not called with source=instagram');
+    assert(runtime.document.querySelector('#instagramResearchButton').textContent === 'Instagram', 'Instagram button did not recover');
+  });
+
+  await check('linkedin button uses linkedin research mode', async () => {
+    const runtime = await createRunningAppDom();
+    runtime.document.querySelector('#brainQuery').value = 'QA_AUTO_RESEARCH_FIXTURE';
+    runtime.document.querySelector('#linkedinResearchButton').click();
+    await waitFor(
+      () => runtime.document.querySelector('#brainResults .research-result a'),
+      'LinkedIn result card was not rendered'
+    );
+    const link = runtime.document.querySelector('#brainResults .research-result a');
+    assert(link.getAttribute('href').startsWith('https://www.linkedin.com/'), 'LinkedIn result should point to LinkedIn');
+    assert(runtime.calls.some((url) => url.includes('source=linkedin')), 'LinkedIn API was not called with source=linkedin');
+    assert(runtime.document.querySelector('#linkedinResearchButton').textContent === 'LinkedIn', 'LinkedIn button did not recover');
   });
 
   await check('youtube button uses youtube research mode', async () => {
@@ -559,6 +995,12 @@ async function main() {
     assert(itemChecks.length === items.length, 'Not every completed item has a checkbox');
     assert(deleteButton.textContent.trim() === '삭제', 'Top action button is not Delete');
     assert(deleteButton.disabled, 'Bulk delete should start disabled');
+    const sourceLinks = runtime.document.querySelectorAll('.completed-sources a.completed-source-link');
+    assert(sourceLinks.length === 2, `Completed sources should render two URL links, got ${sourceLinks.length}`);
+    assert(sourceLinks[0].getAttribute('href') === 'https://example.com/connect-ai/source-one', 'Completed source href is incorrect');
+    assert(sourceLinks[1].getAttribute('href') === 'https://example.com/connect-ai/source-two', 'Completed source href kept trailing punctuation');
+    assert(sourceLinks[0].getAttribute('target') === '_blank', 'Completed source should open in a new tab');
+    assert(sourceLinks[0].getAttribute('rel') === 'noreferrer', 'Completed source rel should be safe');
     itemChecks[0].click();
     assert(!deleteButton.disabled, 'Bulk delete did not enable after selecting one item');
     assert(selectAll.indeterminate, 'Select-all should be indeterminate after selecting one item');

@@ -4,14 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Connect AI Web</title>
-    <link rel="stylesheet" href="/styles.css?v=20260608-8">
+    <link rel="stylesheet" href="/styles.css?v=20260609-agent-edit-1">
   </head>
   <body class="result-collapsed">
     <div class="shell">
       <aside class="sidebar">
         <button id="sidebarToggle" type="button" class="sidebar-toggle" aria-label="패널 닫기" aria-expanded="true">‹</button>
         <div class="brand-row">
-          <img class="brand-logo" src="/assets/petasos-logo.png" alt="Petasos">
+          <button id="brandHome" type="button" class="brand-home" aria-label="홈 화면으로 이동">
+            <img class="brand-logo" src="/assets/petasos-logo.png" alt="Petasos">
+          </button>
         </div>
 
         <section class="panel">
@@ -48,6 +50,9 @@
           </div>
         </header>
 
+        <section id="agentManagerView" class="agent-manager hidden" aria-live="polite"></section>
+
+        <div id="dashboardView" class="dashboard-view">
         <section class="overview">
           <div class="office-map">
             <img src="/assets/office.png" alt="Connect AI office map">
@@ -125,6 +130,8 @@
               <button type="button" id="autoResearchButton" class="secondary">Research</button>
               <button type="button" id="xResearchButton" class="secondary">X Search</button>
               <button type="button" id="threadsResearchButton" class="secondary">Threads</button>
+              <button type="button" id="instagramResearchButton" class="secondary">Instagram</button>
+              <button type="button" id="linkedinResearchButton" class="secondary">LinkedIn</button>
               <button type="button" id="youtubeResearchButton" class="secondary">YouTube</button>
             </form>
             <div id="brainResults" class="brain-results"></div>
@@ -159,6 +166,7 @@
           </div>
           <div id="eventsList" class="events-list"></div>
         </section>
+        </div>
       </main>
 
       <aside id="resultPanel" class="result-panel surface" aria-live="polite">
@@ -213,6 +221,6 @@
         <div id="apiPanelResult" class="test-result" aria-live="polite"></div>
       </section>
     </div>
-    <script src="/app.js?v=20260608-7"></script>
+    <script src="/app.js?v=20260609-agent-edit-1"></script>
   </body>
 </html>

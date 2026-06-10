@@ -155,6 +155,7 @@ function packageInputFiles() {
     rel('web', 'styles.css'),
     ...listFiles('src'),
     ...listFiles(path.join('assets', 'webview')),
+    ...listFiles(path.join('assets', 'brain-seeds', 'anntar')),
     ...listFiles(path.join('assets', 'brain-seeds', 'templates')),
     ...listFiles(path.join('assets', 'prompts')),
     ...listFiles(path.join('assets', 'tool-seeds')),
@@ -192,8 +193,34 @@ check('runtime assets exist on disk', () => {
     'assets/webview/sidebar.html',
     'assets/webview/api-panel.js',
     'assets/webview/api-panel.css',
+    'assets/brain-seeds/anntar/operating-contract.md',
     'assets/brain-seeds/templates/developer/landing-kit/manifest.json'
   ].forEach((asset) => assert(exists(asset), `missing runtime asset: ${asset}`));
+});
+
+check('anntar operating migration is wired', () => {
+  const extension = fs.readFileSync(rel('src', 'extension.ts'), 'utf8');
+  const webServer = fs.readFileSync(rel('scripts', 'web-server.js'), 'utf8');
+  const planner = fs.readFileSync(rel('assets', 'prompts', 'ceo-planner.md'), 'utf8');
+  const system = fs.readFileSync(rel('assets', 'prompts', 'system.md'), 'utf8');
+  [
+    'operating-contract.md',
+    'agent-heartbeat.md',
+    'business-due-diligence-checklist.md',
+    'technical-due-diligence-checklist.md',
+    'research-source-format.md',
+    'role-permission-routing.md',
+    'product-marketing-context.md',
+    'marketing-osmu-workflow.md',
+    'issue-run-governance.md',
+    'hermes-bootstrap-playbook.md'
+  ].forEach((name) => assert(exists(path.join('assets', 'brain-seeds', 'anntar', name)), `missing Anntar seed: ${name}`));
+  assert(extension.includes('_seedAnntarOperatingSeedsIfMissing'), 'Extension does not seed Anntar operating docs');
+  assert(webServer.includes('seedBundledAnntarBrainSeeds'), 'Standalone web server does not seed Anntar operating docs');
+  assert(planner.includes('증거 기반 운영 원칙'), 'CEO planner does not include evidence operating policy');
+  assert(planner.includes('OSMU 흐름'), 'CEO planner does not include OSMU routing policy');
+  assert(system.includes('접근 가능한 원본 URL'), 'System prompt does not include URL normalization policy');
+  assert(system.includes('중간 진행률에서 방치하지 않습니다'), 'System prompt does not include issue-run completion policy');
 });
 
 check('agent profile images exist on disk', () => {
@@ -277,6 +304,7 @@ check('vsix includes required runtime assets', () => {
     'extension/assets/petasos-logo.png',
     'extension/assets/force-graph.min.js',
     'extension/assets/webview/sidebar.html',
+    'extension/assets/brain-seeds/anntar/operating-contract.md',
     'extension/assets/brain-seeds/templates/developer/landing-kit/manifest.json'
   ].forEach((entry) => assert(hasEntry(entries, entry), `VSIX missing ${entry}`));
 

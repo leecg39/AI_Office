@@ -9,9 +9,14 @@ const state = {
   dashboard: null,
   sessionId: '',
   selectedTaskId: '',
+  agentTab: 'dashboard',
+  lastSuccessfulLlmTest: null,
   taskAgentSelection: '',
   approvalAgentSelection: '',
   runningTaskIds: new Set(),
+  knownQueueTaskIds: new Set(),
+  retainedTerminalTaskIds: new Set(),
+  hiddenTerminalTaskIds: new Set(),
   resultExport: { status: '', message: '' },
   isComposingMessage: false,
   isSendingMessage: false
@@ -21,6 +26,16 @@ const $ = (id) => document.getElementById(id);
 const APP_CURRENT_URL_KEY = 'connect-ai-current-url';
 const APP_PREVIOUS_URL_KEY = 'connect-ai-previous-url';
 const GROK_PROXY_STATUS_URL = '/api/llm/proxy/cliproxyapi';
+const TERMINAL_TASK_STATUSES = new Set(['done', 'cancelled', 'failed', 'completed']);
+const AGENT_MANAGER_TABS = [
+  { id: 'dashboard', label: '대시보드' },
+  { id: 'instructions', label: '지침' },
+  { id: 'skills', label: '스킬' },
+  { id: 'settings', label: '설정' },
+  { id: 'runs', label: '실행기록' },
+  { id: 'budget', label: '예산' }
+];
+const AGENT_MANAGER_TAB_IDS = new Set(AGENT_MANAGER_TABS.map((tab) => tab.id));
 
 function sameOriginHref(value) {
   if (!value) return '';
@@ -77,11 +92,73 @@ function safeDomId(value) {
   return String(value || 'item').replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(String(value || ''));
+  } catch {
+    return String(value || '');
+  }
+}
+
 function fmtTime(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtRelativeTime(value) {
+  if (!value) return '기록 없음';
+  const date = new Date(value);
+  const diffMs = Date.now() - date.getTime();
+  if (Number.isNaN(diffMs)) return fmtTime(value);
+  const minutes = Math.max(0, Math.round(diffMs / 60000));
+  if (minutes < 1) return '방금 전';
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.round(hours / 24);
+  return `${days}일 전`;
+}
+
+function fmtCents(value) {
+  const cents = Math.max(0, Number(value) || 0);
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function parseAgentRoute() {
+  const raw = String(window.location.hash || '').replace(/^#/, '');
+  const parts = raw.split('/').map(safeDecode);
+  if (parts[0] !== 'agent' || !parts[1]) return null;
+  const tab = AGENT_MANAGER_TAB_IDS.has(parts[2]) ? parts[2] : 'dashboard';
+  return { agentId: parts[1], tab };
+}
+
+function agentRoute(agentId, tab = 'dashboard') {
+  const safeTab = AGENT_MANAGER_TAB_IDS.has(tab) ? tab : 'dashboard';
+  return `#agent/${encodeURIComponent(agentId)}/${safeTab}`;
+}
+
+function navigateAgent(agentId, tab = 'dashboard') {
+  if (!agentId) return;
+  state.selectedAgent = agentId;
+  state.agentTab = AGENT_MANAGER_TAB_IDS.has(tab) ? tab : 'dashboard';
+  const nextHash = agentRoute(agentId, state.agentTab);
+  if (window.location.hash === nextHash) {
+    renderAll();
+    return;
+  }
+  window.location.hash = nextHash;
+  renderAll();
+}
+
+function syncAgentRoute() {
+  const route = parseAgentRoute();
+  if (!route) return null;
+  if (state.agents.length && !state.agents.some((agent) => agent.id === route.agentId)) return null;
+  state.selectedAgent = route.agentId;
+  state.agentTab = route.tab;
+  return route;
 }
 
 function taskAgent(task) {
@@ -92,6 +169,50 @@ function allDashboardTasks() {
   return state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all || [] : [];
 }
 
+function taskProgressPercent(task) {
+  const percent = Number(task && task.progress && task.progress.percent);
+  return Number.isFinite(percent) ? percent : 0;
+}
+
+function taskIsTerminal(task) {
+  if (!task) return false;
+  if (TERMINAL_TASK_STATUSES.has(task.status || 'open')) return true;
+  return taskProgressPercent(task) >= 100;
+}
+
+function syncRetainedTerminalTasks(tasks) {
+  tasks.forEach((task) => {
+    if (!task || !task.id) return;
+    if (taskIsTerminal(task)) {
+      if (state.knownQueueTaskIds.has(task.id) || state.runningTaskIds.has(task.id)) {
+        state.retainedTerminalTaskIds.add(task.id);
+      }
+      return;
+    }
+    state.knownQueueTaskIds.add(task.id);
+    state.hiddenTerminalTaskIds.delete(task.id);
+  });
+}
+
+function clearTerminalTasksFromQueue(tasks) {
+  tasks.forEach((task) => {
+    if (!task || !task.id || !taskIsTerminal(task)) return;
+    state.hiddenTerminalTaskIds.add(task.id);
+    state.retainedTerminalTaskIds.delete(task.id);
+  });
+  if (state.selectedTaskId) {
+    const selected = tasks.find((task) => task.id === state.selectedTaskId);
+    if (taskIsTerminal(selected)) state.selectedTaskId = '';
+  }
+}
+
+function taskQueueVisible(task) {
+  if (!task) return false;
+  if (state.hiddenTerminalTaskIds.has(task.id)) return false;
+  if (taskIsTerminal(task)) return state.retainedTerminalTaskIds.has(task.id);
+  return true;
+}
+
 function taskHasResultPayload(task) {
   return Boolean(task && (task.result || task.error));
 }
@@ -99,12 +220,8 @@ function taskHasResultPayload(task) {
 function selectedTask() {
   const tasks = allDashboardTasks();
   const selected = tasks.find((task) => task.id === state.selectedTaskId);
-  if (taskHasResultPayload(selected)) return selected;
-  return tasks.find((task) => task.status === 'done' && task.result)
-    || tasks.find(taskHasResultPayload)
-    || selected
-    || tasks[0]
-    || null;
+  if (selected && !taskIsTerminal(selected)) return selected;
+  return null;
 }
 
 function resultPathItems(exports = {}) {
@@ -140,6 +257,7 @@ function renderResultPathLinks(exports = {}) {
 const officePositions = {
   ceo: { x: 13, y: 50 },
   youtube: { x: 29, y: 28 },
+  instagram: { x: 82, y: 29 },
   designer: { x: 43, y: 19 },
   developer: { x: 45, y: 58 },
   business: { x: 58, y: 55 },
@@ -369,6 +487,379 @@ function renderAgentOptions() {
   });
 }
 
+function managerSourceHtml(source = {}) {
+  const docs = Array.isArray(source.docs) ? source.docs : [];
+  return `
+    <div class="manager-source">
+      <strong>Paperclip source</strong>
+      <span>${escapeHtml(source.repository || 'paperclipai/paperclip')}</span>
+      <a href="${escapeHtml(source.url || 'https://github.com/paperclipai/paperclip.git')}" target="_blank" rel="noreferrer">GitHub</a>
+      ${docs.length ? `<p>${docs.map((doc) => `<code>${escapeHtml(doc)}</code>`).join(' ')}</p>` : ''}
+    </div>
+  `;
+}
+
+function agentAvatarHtml(agent, className = 'manager-avatar') {
+  return `
+    <span class="${className}" style="--accent:${escapeHtml(agent.accent || '#35c8ff')}">
+      ${agent.avatar ? `<img src="${escapeHtml(agent.avatar)}" alt="">` : `<span>${escapeHtml(agent.emoji || '')}</span>`}
+    </span>
+  `;
+}
+
+function managerTabsHtml(agent, activeTab) {
+  return `
+    <nav class="manager-tabs" aria-label="에이전트 관리 탭">
+      ${AGENT_MANAGER_TABS.map((tab) => `
+        <button type="button" class="manager-tab${tab.id === activeTab ? ' active' : ''}" data-agent-tab="${escapeHtml(tab.id)}">
+          ${escapeHtml(tab.label)}
+        </button>
+      `).join('')}
+    </nav>
+  `;
+}
+
+function managerMetric(label, value, detail = '') {
+  return `
+    <article class="manager-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${detail ? `<em>${escapeHtml(detail)}</em>` : ''}
+    </article>
+  `;
+}
+
+function managerProgress(percent, label = '') {
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  return `
+    <div class="manager-progress" aria-label="${escapeHtml(label || `${safePercent}%`)}">
+      <span style="width:${safePercent}%"></span>
+    </div>
+  `;
+}
+
+function renderManagerDashboard(agent, management) {
+  const overview = management.overview || {};
+  const budget = management.budget || {};
+  const org = management.org || {};
+  return `
+    <div class="manager-grid">
+      ${managerMetric('상태', overview.status === 'running' ? 'Running' : 'Paused', overview.adapterType || '')}
+      ${managerMetric('모델', overview.model || '-', overview.modelProfile || '')}
+      ${managerMetric('열린 작업', String(overview.openTasks || 0), `승인 ${overview.approvalsPending || 0}`)}
+      ${managerMetric('월 예산', `${fmtCents(budget.spentCents)} / ${fmtCents(budget.monthlyCents)}`, `${budget.percent || 0}% 사용`)}
+    </div>
+    <div class="manager-two-col">
+      <section class="manager-card">
+        <div class="section-kicker">Summary</div>
+        <h3>운영 요약</h3>
+        <dl class="manager-kv">
+          <div><dt>Heartbeat</dt><dd>${overview.heartbeatIntervalSec ? `${overview.heartbeatIntervalSec}초 간격` : 'Disabled'}</dd></div>
+          <div><dt>Last heartbeat</dt><dd>${escapeHtml(fmtRelativeTime(overview.lastHeartbeatAt))}</dd></div>
+          <div><dt>Session</dt><dd>${escapeHtml(overview.sessionId || 'No session')}</dd></div>
+          <div><dt>Budget</dt><dd>${managerProgress(budget.percent || 0, '예산 사용률')}</dd></div>
+        </dl>
+      </section>
+      <section class="manager-card">
+        <div class="section-kicker">Org Position</div>
+        <h3>조직 위치</h3>
+        <dl class="manager-kv">
+          <div>
+            <dt>Reports to</dt>
+            <dd>${org.reportsTo ? `<button type="button" class="text-link" data-agent-link="${escapeHtml(org.reportsTo.id)}">${escapeHtml(org.reportsTo.name)}</button>` : '대표 / 최상위'}</dd>
+          </div>
+          <div>
+            <dt>Direct reports</dt>
+            <dd class="manager-chip-row">
+              ${(org.directReports || []).length
+                ? org.directReports.map((item) => `<button type="button" class="manager-chip" data-agent-link="${escapeHtml(item.id)}">${escapeHtml(item.name)}</button>`).join('')
+                : '<span class="muted">직속 보고 없음</span>'}
+            </dd>
+          </div>
+        </dl>
+      </section>
+    </div>
+  `;
+}
+
+function renderManagerInstructions(agent, management) {
+  const instructions = management.instructions || {};
+  const primary = Array.isArray(instructions.primary) ? instructions.primary : [];
+  return `
+    <section class="manager-card">
+      <div class="section-kicker">Instructions</div>
+      <h3>${escapeHtml(agent.name)} 지침 편집</h3>
+      <div class="manager-edit-form">
+        <label class="field">
+          <span>Primary instructions</span>
+          <textarea id="agentInstructionInput" rows="8" placeholder="한 줄에 하나씩 입력">${escapeHtml(primary.join('\n'))}</textarea>
+        </label>
+        <label class="field">
+          <span>Operating policy</span>
+          <textarea id="agentPolicyInput" rows="8" placeholder="공통 운영 원칙">${escapeHtml(instructions.operatingPolicy || '')}</textarea>
+        </label>
+        <button type="button" data-agent-save="instructions">Save</button>
+      </div>
+    </section>
+    ${managerSourceHtml(management.source)}
+  `;
+}
+
+function selectedAttr(value, option) {
+  return String(value || '') === String(option || '') ? ' selected' : '';
+}
+
+function checkedAttr(value) {
+  return value ? ' checked' : '';
+}
+
+function managerSkillEditorRow(skill = {}) {
+  const status = skill.status || 'enabled';
+  return `
+    <article class="manager-skill manager-skill-edit" data-skill-row>
+      <label class="field compact">
+        <span>Skill</span>
+        <input class="manager-skill-name" type="text" value="${escapeHtml(skill.name || '')}" placeholder="스킬 이름">
+      </label>
+      <label class="field compact">
+        <span>Source</span>
+        <input class="manager-skill-source" type="text" value="${escapeHtml(skill.source || 'Connect AI')}" placeholder="출처">
+      </label>
+      <label class="field compact">
+        <span>Status</span>
+        <select class="manager-skill-status">
+          <option value="enabled"${selectedAttr(status, 'enabled')}>enabled</option>
+          <option value="disabled"${selectedAttr(status, 'disabled')}>disabled</option>
+        </select>
+      </label>
+      <button type="button" class="danger small" data-agent-skill-remove>삭제</button>
+    </article>
+  `;
+}
+
+function renderManagerSkills(management) {
+  const skills = Array.isArray(management.skills) ? management.skills : [];
+  return `
+    <section class="manager-card">
+      <div class="section-kicker">Skills</div>
+      <h3>스킬 편집</h3>
+      <div id="agentSkillsEditor" class="manager-skill-grid editable">
+        ${skills.map((skill) => managerSkillEditorRow(skill)).join('')}
+      </div>
+      <div class="manager-form-actions">
+        <button type="button" class="secondary" data-agent-skill-add>스킬 추가</button>
+        <button type="button" data-agent-save="skills">Save</button>
+      </div>
+    </section>
+    ${managerSourceHtml(management.source)}
+  `;
+}
+
+function settingsRows(values) {
+  return Object.entries(values || {}).map(([key, value]) => `
+    <div>
+      <dt>${escapeHtml(key)}</dt>
+      <dd>${escapeHtml(Array.isArray(value) ? value.join(', ') : value === true ? 'true' : value === false ? 'false' : value || '-')}</dd>
+    </div>
+  `).join('');
+}
+
+function managerInput(id, label, value, type = 'text', extra = '') {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input id="${escapeHtml(id)}" type="${escapeHtml(type)}" value="${escapeHtml(value ?? '')}" ${extra}>
+    </label>
+  `;
+}
+
+function renderManagerSettings(agent, management) {
+  const settings = management.settings || {};
+  const identity = settings.identity || {};
+  const adapter = settings.adapter || {};
+  const heartbeat = settings.heartbeat || {};
+  const runtime = settings.runtime || {};
+  return `
+    <section class="manager-card">
+      <div class="section-kicker">Editable</div>
+      <h3>상태 관리</h3>
+      <div class="manager-edit-form">
+        <label class="manager-toggle">
+          <input id="agentActiveToggle" type="checkbox"${agent.active ? ' checked' : ''}>
+          <span>에이전트 활성화</span>
+        </label>
+        <label class="field">
+          <span>Goal Memo</span>
+          <textarea id="agentGoalInput" rows="3" placeholder="이 에이전트의 현재 목표">${escapeHtml(agent.goal || '')}</textarea>
+        </label>
+      </div>
+    </section>
+    <div class="manager-two-col">
+      <section class="manager-card">
+        <div class="section-kicker">Identity</div>
+        <h3>정체성 편집</h3>
+        <div class="manager-edit-form">
+          ${managerInput('agentIdentityName', 'Name', identity.name || agent.name)}
+          ${managerInput('agentIdentityRole', 'Role', identity.role || agent.role)}
+          ${managerInput('agentIdentityTitle', 'Title', identity.title || '')}
+          <label class="field">
+            <span>Capabilities</span>
+            <textarea id="agentIdentityCapabilities" rows="4">${escapeHtml(identity.capabilities || '')}</textarea>
+          </label>
+        </div>
+      </section>
+      <section class="manager-card">
+        <div class="section-kicker">Adapter</div>
+        <h3>어댑터 편집</h3>
+        <div class="manager-edit-form">
+          ${managerInput('agentAdapterType', 'Type', adapter.type || 'connect_ai_local')}
+          ${managerInput('agentAdapterModel', 'Model', adapter.model || '')}
+          ${managerInput('agentAdapterProfile', 'Model profile', adapter.modelProfile || '')}
+          ${managerInput('agentAdapterTemperature', 'Temperature', adapter.temperature ?? 0.35, 'number', 'min="0" max="2" step="0.05"')}
+          ${managerInput('agentAdapterContext', 'Context mode', adapter.contextMode || 'brain')}
+        </div>
+      </section>
+      <section class="manager-card">
+        <div class="section-kicker">Heartbeat</div>
+        <h3>실행 정책 편집</h3>
+        <div class="manager-edit-form">
+          <label class="manager-toggle">
+            <input id="agentHeartbeatEnabled" type="checkbox"${checkedAttr(heartbeat.enabled !== false)}>
+            <span>Heartbeat enabled</span>
+          </label>
+          ${managerInput('agentHeartbeatInterval', 'Interval seconds', heartbeat.intervalSec ?? 300, 'number', 'min="0" step="1"')}
+          ${managerInput('agentHeartbeatCooldown', 'Cooldown seconds', heartbeat.cooldownSec ?? 10, 'number', 'min="0" step="1"')}
+          <label class="manager-toggle"><input id="agentWakeAssignment" type="checkbox"${checkedAttr(heartbeat.wakeOnAssignment !== false)}><span>Wake on assignment</span></label>
+          <label class="manager-toggle"><input id="agentWakeDemand" type="checkbox"${checkedAttr(heartbeat.wakeOnDemand !== false)}><span>Wake on demand</span></label>
+          <label class="manager-toggle"><input id="agentWakeAutomation" type="checkbox"${checkedAttr(heartbeat.wakeOnAutomation !== false)}><span>Wake on automation</span></label>
+        </div>
+      </section>
+      <section class="manager-card">
+        <div class="section-kicker">Runtime</div>
+        <h3>런타임 편집</h3>
+        <div class="manager-edit-form">
+          ${managerInput('agentRuntimeTimeout', 'Timeout seconds', runtime.timeoutSec ?? 45, 'number', 'min="1" step="1"')}
+          ${managerInput('agentRuntimeGrace', 'Grace period seconds', runtime.gracePeriodSec ?? 15, 'number', 'min="0" step="1"')}
+          ${managerInput('agentRuntimeConcurrency', 'Max concurrent runs', runtime.maxConcurrentRuns ?? 1, 'number', 'min="1" step="1"')}
+          <label class="field">
+            <span>Handoff targets</span>
+            <textarea id="agentHandoffTargets" rows="3" placeholder="한 줄에 하나씩 입력">${escapeHtml(Array.isArray(settings.handoffTargets) ? settings.handoffTargets.join('\n') : '')}</textarea>
+          </label>
+        </div>
+      </section>
+    </div>
+    <div class="manager-form-actions sticky-actions">
+      <button type="button" data-agent-save="settings">Save</button>
+    </div>
+  `;
+}
+
+function runStatusLabel(status) {
+  return status === 'done' || status === 'completed' ? '완료'
+    : status === 'failed' ? '실패'
+      : status === 'running' ? '실행 중'
+        : status === 'cancelled' ? '취소'
+          : '대기';
+}
+
+function renderManagerRuns(management) {
+  const runs = Array.isArray(management.runs) ? management.runs : [];
+  return `
+    <section class="manager-card">
+      <div class="section-kicker">Runs</div>
+      <h3>실행기록</h3>
+      <div class="manager-run-list">
+        ${runs.length ? runs.map((run) => `
+          <article class="manager-run">
+            <span class="run-status status-${escapeHtml(run.status || 'open')}">${escapeHtml(runStatusLabel(run.status))}</span>
+            <div>
+              <strong>#${escapeHtml(String(run.id || '').slice(-8))} · ${escapeHtml(run.title || '작업')}</strong>
+              <p>${escapeHtml(run.invocationSource || 'manual')} · ${escapeHtml(fmtRelativeTime(run.updatedAt || run.createdAt))} · ${Number(run.inputTokens || 0) + Number(run.outputTokens || 0)} tokens · ${fmtCents(run.costCents)}</p>
+              <span>${escapeHtml(String(run.summary || '').split('\n')[0].slice(0, 180))}</span>
+            </div>
+          </article>
+        `).join('') : '<div class="empty">아직 실행기록이 없습니다.</div>'}
+      </div>
+    </section>
+    ${managerSourceHtml(management.source)}
+  `;
+}
+
+function renderManagerBudget(management) {
+  const budget = management.budget || {};
+  const runs = Array.isArray(management.runs) ? management.runs : [];
+  return `
+    <section class="manager-card">
+      <div class="section-kicker">Budget</div>
+      <h3>월 예산 편집</h3>
+      <div class="budget-hero manager-edit-form">
+        <strong>${fmtCents(budget.spentCents)} / ${fmtCents(budget.monthlyCents)}</strong>
+        ${managerProgress(budget.percent || 0, '월 예산 사용률')}
+        ${managerInput('agentBudgetMonthlyDollars', 'Monthly budget USD', ((Number(budget.monthlyCents) || 0) / 100).toFixed(2), 'number', 'min="0" step="0.01"')}
+        ${managerInput('agentBudgetSoftAlert', 'Soft alert percent', budget.softAlertPercent ?? 80, 'number', 'min="0" max="100" step="1"')}
+        ${managerInput('agentBudgetHardStop', 'Hard stop percent', budget.hardStopPercent ?? 100, 'number', 'min="0" max="100" step="1"')}
+        <label class="field">
+          <span>Policy</span>
+          <textarea id="agentBudgetPolicy" rows="3">${escapeHtml(budget.policy || '80% 소프트 알림, 100% 하드 스톱')}</textarea>
+        </label>
+        <button type="button" data-agent-save="budget">Save</button>
+      </div>
+    </section>
+    <section class="manager-card">
+      <div class="section-kicker">Per Run Cost</div>
+      <h3>실행별 비용</h3>
+      <div class="manager-cost-table">
+        <div class="manager-cost-row head"><span>날짜</span><span>Run</span><span>Tokens</span><span>Cost</span></div>
+        ${runs.length ? runs.map((run) => `
+          <div class="manager-cost-row">
+            <span>${escapeHtml(fmtTime(run.updatedAt || run.createdAt))}</span>
+            <span>#${escapeHtml(String(run.id || '').slice(-8))}</span>
+            <span>${Number(run.inputTokens || 0) + Number(run.outputTokens || 0)}</span>
+            <span>${fmtCents(run.costCents)}</span>
+          </div>
+        `).join('') : '<div class="empty">비용 기록이 없습니다.</div>'}
+      </div>
+    </section>
+    ${managerSourceHtml(management.source)}
+  `;
+}
+
+function renderManagerTab(agent, management, tab) {
+  if (tab === 'instructions') return renderManagerInstructions(agent, management);
+  if (tab === 'skills') return renderManagerSkills(management);
+  if (tab === 'settings') return renderManagerSettings(agent, management);
+  if (tab === 'runs') return renderManagerRuns(management);
+  if (tab === 'budget') return renderManagerBudget(management);
+  return renderManagerDashboard(agent, management);
+}
+
+function renderAgentManager() {
+  const box = $('agentManagerView');
+  if (!box) return;
+  const agent = currentAgent();
+  const management = agent.management || {};
+  const tab = AGENT_MANAGER_TAB_IDS.has(state.agentTab) ? state.agentTab : 'dashboard';
+  box.innerHTML = `
+    <section class="manager-hero surface" style="--accent:${escapeHtml(agent.accent || '#35c8ff')}">
+      ${agentAvatarHtml(agent)}
+      <div>
+        <div class="section-kicker">Agent Management</div>
+        <h1>${escapeHtml(agent.name)}</h1>
+        <p>${escapeHtml(agent.role || '')}</p>
+        <span>${escapeHtml(agent.tagline || agent.specialty || '')}</span>
+      </div>
+      <div class="manager-hero-actions">
+        <button type="button" class="secondary small" data-dashboard-home>대시보드</button>
+        <span class="manager-status ${agent.active ? 'on' : 'off'}">${agent.active ? 'Running' : 'Paused'}</span>
+      </div>
+    </section>
+    ${managerTabsHtml(agent, tab)}
+    <div class="manager-body">
+      ${renderManagerTab(agent, management, tab)}
+    </div>
+  `;
+}
+
 function renderSidebarAgents() {
   const list = $('agentList');
   list.innerHTML = '';
@@ -387,11 +878,17 @@ function renderSidebarAgents() {
       <span class="agent-status ${agent.active ? 'on' : ''}"></span>
     `;
     item.addEventListener('click', () => {
-      state.selectedAgent = agent.id;
-      renderAll();
+      navigateAgent(agent.id, 'dashboard');
     });
     list.appendChild(item);
   });
+}
+
+function selectDashboardAgent(agentId) {
+  if (!agentId) return;
+  state.selectedAgent = agentId;
+  state.agentTab = 'dashboard';
+  renderAll();
 }
 
 function renderTeam() {
@@ -413,8 +910,7 @@ function renderTeam() {
       <div class="task-pill">${Number(agent.openTasks || 0)}</div>
     `;
     card.addEventListener('click', () => {
-      state.selectedAgent = agent.id;
-      renderAll();
+      selectDashboardAgent(agent.id);
     });
     grid.appendChild(card);
   });
@@ -854,9 +1350,10 @@ function renderTaskDetail() {
   const box = $('taskDetail');
   if (!box) return;
   const tasks = allDashboardTasks();
-  const open = tasks.filter((task) => !['done', 'cancelled', 'failed'].includes(task.status || 'open'));
-  const selected = tasks.find((task) => task.id === state.selectedTaskId) || open[0] || tasks[0];
+  const open = tasks.filter((task) => taskQueueVisible(task) && !taskIsTerminal(task));
+  const selected = open.find((task) => task.id === state.selectedTaskId) || open[0];
   if (!selected) {
+    state.selectedTaskId = '';
     box.innerHTML = '<div class="empty">작업을 선택하면 진행 상황이 표시됩니다.</div>';
     return;
   }
@@ -959,24 +1456,29 @@ function renderResultPanel() {
 function renderTasks() {
   const list = $('taskList');
   const tasks = state.dashboard && state.dashboard.tasks ? state.dashboard.tasks.all : [];
-  const visible = tasks.filter((task) => !['done', 'cancelled', 'failed'].includes(task.status || 'open')).slice(0, 12);
+  const visible = tasks.filter(taskQueueVisible).slice(0, 12);
   if (visible.length === 0) {
     list.innerHTML = '<div class="empty">열린 작업이 없습니다.</div>';
-    if (!state.selectedTaskId) {
-      const latestFailed = tasks.find((task) => task.status === 'failed');
-      state.selectedTaskId = latestFailed ? latestFailed.id : '';
-    }
+    state.selectedTaskId = '';
     renderTaskDetail();
     return;
   }
   list.innerHTML = visible.map((task) => {
     const agent = taskAgent(task);
     const disabled = task.source === 'company' ? ' disabled title="확장 tracker 작업은 웹에서 직접 수정하지 않습니다."' : '';
+    const isTerminal = taskIsTerminal(task);
     const isRunning = task.status === 'running' || state.runningTaskIds.has(task.id);
     const runDisabled = disabled || isRunning ? ' disabled' : '';
     const progress = task.progress || { percent: 0, label: '진행 중' };
+    const actionsHtml = isTerminal
+      ? `<span class="task-terminal-note">${escapeHtml(progress.label || '완료')}</span>`
+      : `
+          <button type="button" class="icon-btn" data-run-task="${escapeHtml(task.id)}"${runDisabled} title="LLM으로 작업 실행">${isRunning ? '…' : '▶'}</button>
+          <button type="button" class="icon-btn" data-task="${escapeHtml(task.id)}" data-status="done"${disabled}>✓</button>
+          <button type="button" class="icon-btn danger" data-task="${escapeHtml(task.id)}" data-status="cancelled"${disabled}>×</button>
+        `;
     return `
-      <article class="work-item priority-${escapeHtml(task.priority)} ${task.id === state.selectedTaskId ? 'selected' : ''}" data-task-row="${escapeHtml(task.id)}">
+      <article class="work-item priority-${escapeHtml(task.priority)} ${isTerminal ? 'terminal' : ''} ${!isTerminal && task.id === state.selectedTaskId ? 'selected' : ''}"${isTerminal ? '' : ` data-task-row="${escapeHtml(task.id)}"`}>
         <div class="work-main">
           <span class="work-dot" style="background:${escapeHtml(agent.accent || '#90a0a8')}"></span>
           <div>
@@ -985,11 +1487,7 @@ function renderTasks() {
             <div class="mini-progress"><span style="width:${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%"></span></div>
           </div>
         </div>
-        <div class="item-actions">
-          <button type="button" class="icon-btn" data-run-task="${escapeHtml(task.id)}"${runDisabled} title="LLM으로 작업 실행">${isRunning ? '…' : '▶'}</button>
-          <button type="button" class="icon-btn" data-task="${escapeHtml(task.id)}" data-status="done"${disabled}>✓</button>
-          <button type="button" class="icon-btn danger" data-task="${escapeHtml(task.id)}" data-status="cancelled"${disabled}>×</button>
-        </div>
+        <div class="item-actions">${actionsHtml}</div>
       </article>
     `;
   }).join('');
@@ -1008,8 +1506,9 @@ function renderTasks() {
       runTask(button.dataset.runTask);
     });
   });
-  if (!state.selectedTaskId || !visible.some((task) => task.id === state.selectedTaskId)) {
-    state.selectedTaskId = visible[0] ? visible[0].id : '';
+  const activeVisible = visible.filter((task) => !taskIsTerminal(task));
+  if (!state.selectedTaskId || !activeVisible.some((task) => task.id === state.selectedTaskId)) {
+    state.selectedTaskId = activeVisible[0] ? activeVisible[0].id : '';
   }
   renderTaskDetail();
 }
@@ -1105,8 +1604,14 @@ function renderAll() {
   const dashboard = state.dashboard || {};
   state.agents = dashboard.agents || state.agents || [];
   state.config = dashboard.config || state.config || {};
+  const agentRouteState = syncAgentRoute();
+  const isManagerView = Boolean(agentRouteState);
+  const dashboardView = $('dashboardView');
+  const managerView = $('agentManagerView');
+  if (dashboardView) dashboardView.classList.toggle('hidden', isManagerView);
+  if (managerView) managerView.classList.toggle('hidden', !isManagerView);
 
-  $('companyName').textContent = 'AI Company';
+  $('companyName').textContent = isManagerView ? `${currentAgent().name} · Agent` : 'AI Company';
   $('serverState').textContent = dashboard.version ? `${dashboard.version} online` : 'online';
   $('brainState').textContent = dashboard.brain ? `${dashboard.brain.fileCount}${dashboard.brain.capped ? '+' : ''} files` : '-';
   $('sessionState').textContent = state.sessionId ? state.sessionId.slice(-8) : 'new';
@@ -1127,6 +1632,7 @@ function renderAll() {
   renderApprovals();
   renderEvents();
   renderModels();
+  renderAgentManager();
 }
 
 async function selectTask(id) {
@@ -1147,26 +1653,56 @@ async function selectTask(id) {
   renderOfficeActivity();
 }
 
-async function refreshDashboard() {
+async function refreshDashboard(options = {}) {
   state.dashboard = await api('/api/dashboard');
   state.agents = state.dashboard.agents || [];
   state.config = state.dashboard.config || {};
+  const tasks = allDashboardTasks();
+  syncRetainedTerminalTasks(tasks);
+  if (options.clearTerminalTasks) clearTerminalTasksFromQueue(tasks);
   if (!state.agents.some((agent) => agent.id === state.selectedAgent)) {
     state.selectedAgent = state.agents[0] ? state.agents[0].id : 'ceo';
   }
+  syncAgentRoute();
   renderAll();
 }
 
-async function refreshModels() {
+async function refreshModels(options = {}) {
   try {
     const data = await api('/api/models');
     state.models = data.models || [];
     state.auth = data.auth || {};
-    state.config.defaultModel = data.defaultModel || state.config.defaultModel || '';
+    const successfulModel = options.applySuccessfulModel && state.lastSuccessfulLlmTest
+      ? normalizeModelValue(state.lastSuccessfulLlmTest.model)
+      : '';
+    state.config.defaultModel = successfulModel || data.defaultModel || state.config.defaultModel || '';
     renderModels();
+    if (successfulModel && [...$('modelSelect').options].some((option) => option.value === successfulModel)) {
+      $('modelSelect').value = successfulModel;
+    }
+    if (successfulModel && options.persistSuccessfulModel) {
+      const result = await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          ollamaBase: $('ollamaBase').value.trim(),
+          defaultModel: successfulModel,
+          localBrainPath: $('brainPath').value.trim()
+        })
+      });
+      state.config = result.config || { ...state.config, defaultModel: successfulModel };
+      renderModels();
+      if ([...$('modelSelect').options].some((option) => option.value === successfulModel)) {
+        $('modelSelect').value = successfulModel;
+      }
+      setLlmTestResult('ok', `모델 반영 완료 · ${successfulModel}`);
+      setApiPanelResult('ok', `LLM Test 성공 모델을 반영했습니다.\n${successfulModel}`);
+    }
     if (data.errors && data.errors.length) {
       const errorText = data.errors.map((item) => `${item.provider}: ${item.error}`).join('\n');
       setLlmTestResult('pending', `일부 모델 목록 실패 · ${errorText}`);
+    } else if (options.fromButton && !successfulModel) {
+      setLlmTestResult('ok', '모델 목록을 새로고침했습니다.');
+      setApiPanelResult('ok', '모델 목록을 새로고침했습니다.');
     }
     return data;
   } catch (error) {
@@ -1174,6 +1710,30 @@ async function refreshModels() {
     renderModels();
     addMessage('error', 'Model check', `모델 목록을 가져오지 못했습니다.\n${error.message}`);
     return { models: [], errors: [{ provider: 'local', error: error.message }] };
+  }
+}
+
+async function refreshModelsFromButton() {
+  const button = $('refreshModels');
+  const originalText = button ? button.textContent : 'Refresh';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Refreshing...';
+  }
+  const hasSuccessfulModel = Boolean(state.lastSuccessfulLlmTest && state.lastSuccessfulLlmTest.model);
+  setLlmTestResult('pending', hasSuccessfulModel ? '성공한 LLM Test 모델을 반영 중...' : '모델 목록 새로고침 중...');
+  setApiPanelResult('pending', hasSuccessfulModel ? '성공한 LLM Test 모델을 반영 중...' : '모델 목록 새로고침 중...');
+  try {
+    return await refreshModels({
+      fromButton: true,
+      applySuccessfulModel: true,
+      persistSuccessfulModel: true
+    });
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -1375,22 +1935,33 @@ async function testLlmConnection() {
       ? result.stages.map((stage) => `${stage.name}:${stage.ok ? 'ok' : 'fail'}`).join(' · ')
       : '';
     if (result.authRequired) {
+      state.lastSuccessfulLlmTest = null;
       const text = `${result.provider || 'LLM'} API key 필요 · ${result.error || '환경 변수를 설정해 주세요.'}`;
       setLlmTestResult('error', text);
       addMessage('error', 'LLM Test', `${text}\n${result.authUrl || ''}`);
       return;
     }
     if (result.connected) {
+      state.lastSuccessfulLlmTest = {
+        model: selectedModel,
+        resultModel: result.model || '',
+        upstreamModel: result.upstreamModel || '',
+        provider: result.provider || '',
+        base: $('ollamaBase').value.trim(),
+        testedAt: new Date().toISOString()
+      };
       const text = `연결 성공 · ${result.provider || 'LLM'} · ${result.model} · ${result.latencyMs}ms`;
       setLlmTestResult('ok', text);
       addMessage('system', 'LLM Test', `${text}\n${stageText}`);
     } else {
+      state.lastSuccessfulLlmTest = null;
       const text = `연결 실패 · ${result.model || $('modelSelect').value || '모델 없음'} · ${result.error || '알 수 없는 오류'}`;
       setLlmTestResult('error', text);
       addMessage('error', 'LLM Test', `${text}\n${stageText}`);
     }
     await refreshDashboard();
   } catch (error) {
+    state.lastSuccessfulLlmTest = null;
     setLlmTestResult('error', `연결 실패 · ${error.message}`);
     addMessage('error', 'LLM Test', error.message);
   } finally {
@@ -1399,19 +1970,170 @@ async function testLlmConnection() {
 }
 
 async function saveConfig() {
+  const button = $('saveConfig');
+  const originalText = button ? button.textContent : 'Save';
   const payload = {
     ollamaBase: $('ollamaBase').value.trim(),
     defaultModel: $('modelSelect').value.trim(),
     localBrainPath: $('brainPath').value.trim()
   };
-  const result = await api('/api/config', {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
-  state.config = result.config;
-  addMessage('system', 'Saved', '웹 앱 설정을 저장했습니다.');
-  await refreshDashboard();
-  await refreshModels();
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Saving...';
+  }
+  setLlmTestResult('pending', '설정 저장 중...');
+  setApiPanelResult('pending', '설정 저장 중...');
+  try {
+    const result = await api('/api/config', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    state.config = result.config || { ...state.config, ...payload };
+    await refreshDashboard();
+    await refreshModels();
+    renderModels();
+    const savedModel = normalizeModelValue((state.config && state.config.defaultModel) || payload.defaultModel);
+    if (savedModel && [...$('modelSelect').options].some((option) => option.value === savedModel)) {
+      $('modelSelect').value = savedModel;
+    }
+    const savedBase = (state.config && state.config.ollamaBase) || payload.ollamaBase;
+    const savedBrain = (state.config && state.config.localBrainPath) || payload.localBrainPath;
+    const message = `저장 완료 · ${savedBase || 'LLM URL 유지'} · ${savedModel || '모델 유지'}`;
+    setLlmTestResult('ok', message);
+    setApiPanelResult('ok', `${message}\nBrain Folder · ${savedBrain || '기존 경로 유지'}`);
+    addMessage('system', 'Saved', '웹 앱 설정을 저장했습니다.');
+  } catch (error) {
+    setLlmTestResult('error', `저장 실패 · ${error.message}`);
+    setApiPanelResult('error', `저장 실패 · ${error.message}`);
+    throw error;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+function managerValue(id) {
+  const input = $(id);
+  return input ? input.value.trim() : '';
+}
+
+function managerNumber(id, fallback = 0) {
+  const value = Number(managerValue(id));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function managerChecked(id, fallback = false) {
+  const input = $(id);
+  return input ? input.checked : fallback;
+}
+
+function managerLines(id) {
+  return managerValue(id)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function collectManagerSkills() {
+  return [...document.querySelectorAll('#agentSkillsEditor [data-skill-row]')]
+    .map((row) => {
+      const name = row.querySelector('.manager-skill-name') ? row.querySelector('.manager-skill-name').value.trim() : '';
+      if (!name) return null;
+      return {
+        name,
+        source: row.querySelector('.manager-skill-source') ? row.querySelector('.manager-skill-source').value.trim() : 'Connect AI',
+        status: row.querySelector('.manager-skill-status') ? row.querySelector('.manager-skill-status').value : 'enabled'
+      };
+    })
+    .filter(Boolean);
+}
+
+function collectAgentManagerPayload(section) {
+  const activeInput = $('agentActiveToggle');
+  const goalInput = $('agentGoalInput');
+  const payload = {};
+  if (activeInput) payload.active = activeInput.checked;
+  if (goalInput) payload.goal = goalInput.value.trim();
+
+  if (section === 'instructions') {
+    payload.management = {
+      instructions: {
+        primary: managerLines('agentInstructionInput'),
+        operatingPolicy: managerValue('agentPolicyInput')
+      }
+    };
+  } else if (section === 'skills') {
+    payload.management = { skills: collectManagerSkills() };
+  } else if (section === 'settings') {
+    payload.management = {
+      settings: {
+        identity: {
+          name: managerValue('agentIdentityName'),
+          role: managerValue('agentIdentityRole'),
+          title: managerValue('agentIdentityTitle'),
+          capabilities: managerValue('agentIdentityCapabilities')
+        },
+        adapter: {
+          type: managerValue('agentAdapterType'),
+          model: managerValue('agentAdapterModel'),
+          modelProfile: managerValue('agentAdapterProfile'),
+          temperature: managerNumber('agentAdapterTemperature', 0.35),
+          contextMode: managerValue('agentAdapterContext')
+        },
+        heartbeat: {
+          enabled: managerChecked('agentHeartbeatEnabled', true),
+          intervalSec: managerNumber('agentHeartbeatInterval', 300),
+          cooldownSec: managerNumber('agentHeartbeatCooldown', 10),
+          wakeOnAssignment: managerChecked('agentWakeAssignment', true),
+          wakeOnDemand: managerChecked('agentWakeDemand', true),
+          wakeOnAutomation: managerChecked('agentWakeAutomation', true)
+        },
+        runtime: {
+          timeoutSec: managerNumber('agentRuntimeTimeout', 45),
+          gracePeriodSec: managerNumber('agentRuntimeGrace', 15),
+          maxConcurrentRuns: managerNumber('agentRuntimeConcurrency', 1)
+        },
+        handoffTargets: managerLines('agentHandoffTargets')
+      }
+    };
+  } else if (section === 'budget') {
+    payload.management = {
+      budget: {
+        monthlyCents: Math.round(managerNumber('agentBudgetMonthlyDollars', 0) * 100),
+        softAlertPercent: managerNumber('agentBudgetSoftAlert', 80),
+        hardStopPercent: managerNumber('agentBudgetHardStop', 100),
+        policy: managerValue('agentBudgetPolicy')
+      }
+    };
+  }
+
+  return payload;
+}
+
+async function saveAgentManagerSettings(button = null, section = state.agentTab) {
+  const agent = currentAgent();
+  if (!agent || !agent.id) return;
+  const payload = collectAgentManagerPayload(section);
+  const originalText = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Saving...';
+  }
+  try {
+    await api(`/api/agents/${encodeURIComponent(agent.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    });
+    addMessage('system', 'Agent saved', `${agent.name} ${section} 저장 완료`);
+    await refreshDashboard();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
 }
 
 async function applyGrokProxy() {
@@ -1600,23 +2322,28 @@ async function autoResearch(source = 'web') {
   const query = $('brainQuery').value.trim();
   if (!query) return;
   const box = $('brainResults');
-  const isXSearch = source === 'x';
-  const isThreadsSearch = source === 'threads';
-  const isYouTubeSearch = source === 'youtube';
-  const button = $(isXSearch ? 'xResearchButton' : isThreadsSearch ? 'threadsResearchButton' : isYouTubeSearch ? 'youtubeResearchButton' : 'autoResearchButton');
-  const sourceParam = isXSearch ? '&source=x' : isThreadsSearch ? '&source=threads' : isYouTubeSearch ? '&source=youtube' : '';
+  const sourceConfig = {
+    web: { button: 'autoResearchButton', param: '', loading: 'Researching', label: 'Research', pending: '리서치 중...' },
+    x: { button: 'xResearchButton', param: '&source=x', loading: 'X Searching', label: 'X Search', pending: 'X 검색 중...' },
+    threads: { button: 'threadsResearchButton', param: '&source=threads', loading: 'Threads Searching', label: 'Threads', pending: 'Threads 검색 중...' },
+    instagram: { button: 'instagramResearchButton', param: '&source=instagram', loading: 'Instagram Searching', label: 'Instagram', pending: 'Instagram 검색 중...' },
+    linkedin: { button: 'linkedinResearchButton', param: '&source=linkedin', loading: 'LinkedIn Searching', label: 'LinkedIn', pending: 'LinkedIn 검색 중...' },
+    youtube: { button: 'youtubeResearchButton', param: '&source=youtube', loading: 'YouTube Searching', label: 'YouTube', pending: 'YouTube 검색 중...' }
+  }[source] || { button: 'autoResearchButton', param: '', loading: 'Researching', label: 'Research', pending: '리서치 중...' };
+  const button = $(sourceConfig.button);
+  const sourceParam = sourceConfig.param;
   if (button) {
     button.disabled = true;
-    button.textContent = isXSearch ? 'X Searching' : isThreadsSearch ? 'Threads Searching' : isYouTubeSearch ? 'YouTube Searching' : 'Researching';
+    button.textContent = sourceConfig.loading;
   }
-  box.innerHTML = `<div class="empty">${isXSearch ? 'X 검색 중...' : isThreadsSearch ? 'Threads 검색 중...' : isYouTubeSearch ? 'YouTube 검색 중...' : '리서치 중...'}</div>`;
+  box.innerHTML = `<div class="empty">${sourceConfig.pending}</div>`;
   try {
     const result = await api(`/api/research?q=${encodeURIComponent(query)}${sourceParam}`);
     renderResearch(result);
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = isXSearch ? 'X Search' : isThreadsSearch ? 'Threads' : isYouTubeSearch ? 'YouTube' : 'Research';
+      button.textContent = sourceConfig.label;
     }
   }
 }
@@ -1673,7 +2400,20 @@ function submitChatMessage() {
   sendMessage(message);
 }
 
+function goHome() {
+  state.agentTab = 'dashboard';
+  window.location.hash = '';
+  renderAll();
+  try {
+    if (String(navigator.userAgent || '').includes('jsdom')) return;
+    window.scrollTo({ top: 0, left: 0 });
+  } catch {
+    // Some test DOMs do not implement scrollTo.
+  }
+}
+
 function bindEvents() {
+  $('brandHome').addEventListener('click', goHome);
   $('sidebarToggle').addEventListener('click', toggleSidebar);
   $('resultPanelToggle').addEventListener('click', toggleResultPanel);
   $('apiPanelToggle').addEventListener('click', openApiPanel);
@@ -1689,6 +2429,45 @@ function bindEvents() {
       event.preventDefault();
       scrollTeam(1);
     }
+  });
+  $('agentManagerView').addEventListener('click', (event) => {
+    const tabButton = event.target.closest('[data-agent-tab]');
+    if (tabButton) {
+      navigateAgent(state.selectedAgent, tabButton.dataset.agentTab || 'dashboard');
+      return;
+    }
+    const agentLink = event.target.closest('[data-agent-link]');
+    if (agentLink) {
+      navigateAgent(agentLink.dataset.agentLink || '', 'dashboard');
+      return;
+    }
+    const dashboardButton = event.target.closest('[data-dashboard-home]');
+    if (dashboardButton) {
+      window.location.hash = '';
+      renderAll();
+      return;
+    }
+    const addSkillButton = event.target.closest('[data-agent-skill-add]');
+    if (addSkillButton) {
+      const editor = $('agentSkillsEditor');
+      if (editor) editor.insertAdjacentHTML('beforeend', managerSkillEditorRow({ name: '', source: 'Connect AI', status: 'enabled' }));
+      return;
+    }
+    const removeSkillButton = event.target.closest('[data-agent-skill-remove]');
+    if (removeSkillButton) {
+      const row = removeSkillButton.closest('[data-skill-row]');
+      if (row) row.remove();
+      return;
+    }
+    const saveButton = event.target.closest('[data-agent-save]');
+    if (saveButton) {
+      saveAgentManagerSettings(saveButton, saveButton.dataset.agentSave || state.agentTab)
+        .catch((error) => addMessage('error', 'Agent save failed', error.message));
+    }
+  });
+  window.addEventListener('hashchange', () => {
+    syncAgentRoute();
+    renderAll();
   });
   document.querySelectorAll('[data-close-api]').forEach((button) => {
     button.addEventListener('click', closeApiPanel);
@@ -1723,13 +2502,13 @@ function bindEvents() {
     saveConfig().catch((error) => addMessage('error', 'Save failed', error.message));
   });
   $('refreshModels').addEventListener('click', () => {
-    refreshModels().catch((error) => addMessage('error', 'Refresh failed', error.message));
+    refreshModelsFromButton().catch((error) => addMessage('error', 'Refresh failed', error.message));
   });
   $('testLlm').addEventListener('click', () => {
     testLlmConnection().catch((error) => addMessage('error', 'LLM Test failed', error.message));
   });
   $('refreshDashboard').addEventListener('click', () => {
-    refreshDashboard().catch((error) => addMessage('error', 'Refresh failed', error.message));
+    refreshDashboard({ clearTerminalTasks: true }).catch((error) => addMessage('error', 'Refresh failed', error.message));
   });
   $('resultRefresh').addEventListener('click', () => {
     state.resultExport = { status: '', message: '' };
@@ -1777,6 +2556,18 @@ function bindEvents() {
     autoResearch('threads').catch((error) => {
       renderResearch({ status: 'error', mode: 'threads-web-search', count: 0, error: error.message, results: [], sources: [] });
       addMessage('error', 'Threads Search failed', error.message);
+    });
+  });
+  $('instagramResearchButton').addEventListener('click', () => {
+    autoResearch('instagram').catch((error) => {
+      renderResearch({ status: 'error', mode: 'instagram-web-search', count: 0, error: error.message, results: [], sources: [] });
+      addMessage('error', 'Instagram Search failed', error.message);
+    });
+  });
+  $('linkedinResearchButton').addEventListener('click', () => {
+    autoResearch('linkedin').catch((error) => {
+      renderResearch({ status: 'error', mode: 'linkedin-web-search', count: 0, error: error.message, results: [], sources: [] });
+      addMessage('error', 'LinkedIn Search failed', error.message);
     });
   });
   $('youtubeResearchButton').addEventListener('click', () => {

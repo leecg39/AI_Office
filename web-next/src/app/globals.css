@@ -1,3 +1,4 @@
+@import "tailwindcss";
 :root {
   --bg: #07090d;
   --panel: rgba(14, 20, 24, 0.94);
@@ -361,6 +362,7 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  max-width: none;
 }
 
 .agent-name {
@@ -762,6 +764,7 @@ h2 { font-size: 18px; }
   height: 100%;
   object-fit: cover;
   pointer-events: none;
+  max-width: none;
 }
 
 .marker-work {

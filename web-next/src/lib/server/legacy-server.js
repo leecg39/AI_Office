@@ -11,13 +11,13 @@ const { execFile } = require('child_process');
 const { createHash, randomBytes, randomUUID } = require('crypto');
 const axios = require('axios');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '../../../../');
 const WEB_DIR = path.join(ROOT, 'web');
 const ASSETS_DIR = path.join(ROOT, 'assets');
-const DATA_DIR = path.join(WEB_DIR, 'data');
+const DATA_DIR = path.join(ROOT, 'web-next', 'data');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const LLM_CREDENTIALS_FILE = path.join(DATA_DIR, 'llm-credentials.local.json');
-const LOCAL_CONFIG = path.join(WEB_DIR, 'config.local.json');
+const LOCAL_CONFIG = path.join(ROOT, 'web-next', 'config.local.json');
 const DEFAULT_OBSIDIAN_VAULTS = [
   path.join(os.homedir(), 'Documents', 'Obsidian Vault'),
   path.join(os.homedir(), 'Documents', 'AIS', 'AIS'),
@@ -4242,19 +4242,36 @@ function buildDashboard(config) {
       openTasks: openTasks.filter((task) => task.agent === agent.id || (Array.isArray(task.agentIds) && task.agentIds.includes(agent.id))).length
     };
   });
-  const agents = baseAgents.map((agent) => ({
-    ...agent,
-    management: buildAgentManagement(
-      agent,
-      config,
-      tasks,
-      approvals,
-      state.sessions,
-      state.events,
-      baseAgents,
-      (state.agentState[agent.id] || {}).management
-    )
-  }));
+  const officePositions = {
+    ceo: { x: 13, y: 50 },
+    youtube: { x: 29, y: 28 },
+    instagram: { x: 82, y: 29 },
+    designer: { x: 43, y: 19 },
+    developer: { x: 45, y: 58 },
+    business: { x: 58, y: 55 },
+    secretary: { x: 68, y: 64 },
+    editor: { x: 81, y: 66 },
+    writer: { x: 37, y: 73 },
+    researcher: { x: 90, y: 37 }
+  };
+  const agents = baseAgents.map((agent) => {
+    const pos = officePositions[agent.id] || { x: 50, y: 50 };
+    return {
+      ...agent,
+      x: pos.x,
+      y: pos.y,
+      management: buildAgentManagement(
+        agent,
+        config,
+        tasks,
+        approvals,
+        state.sessions,
+        state.events,
+        baseAgents,
+        (state.agentState[agent.id] || {}).management
+      )
+    };
+  });
   return {
     ok: true,
     mode: 'standalone-web',
@@ -4979,5 +4996,73 @@ module.exports = {
   researchSafeLookup,
   researchSourceFromAgent,
   researchSourceFromText,
-  requestedResearchLimit
+  requestedResearchLimit,
+  getConfig,
+  buildDashboard,
+  loadState,
+  saveState,
+  publicConfig,
+  AGENTS,
+  handleApi,
+  listModelOptions,
+  testLlmConnection,
+  callModel,
+  readJson,
+  writeJson,
+  nowIso,
+  newId,
+  cleanText,
+  cleanSecret,
+  expandHome,
+  walkBrain,
+  termsFromMessage,
+  runAutoResearch,
+  listTasks,
+  enrichTask,
+  pushEvent,
+  getAgent,
+  modelErrorMessage,
+  researchForChat,
+  formatResearchContext,
+  providerConfig,
+  providerCredential,
+  getProviderSummaries,
+  getAuthStatus,
+  createOAuthFlow,
+  handleOAuthCallback,
+  readLlmCredentials,
+  writeLlmCredentials,
+  readActiveAgents,
+  listApprovals,
+  normalizeDefaultModelForConfig,
+  resolveObsidianVaultPath,
+  isGrokProxyBase,
+  lmBase,
+  modelRef,
+  LOCAL_CONFIG,
+  DATA_DIR,
+  STATE_FILE,
+  LLM_CREDENTIALS_FILE,
+  PROVIDERS,
+  PAID_MODELS,
+  OPENAI_API_BASE,
+  ZAI_API_BASE,
+  MOONSHOT_API_BASE,
+  XAI_API_BASE,
+  GROK_PROXY_BASE,
+  GROK_PROXY_MODEL,
+  GROK_PROXY,
+  CHATGPT_RESPONSES_URL,
+  CHATMOCK_OPENAI_CLIENT_ID,
+  CHATMOCK_OPENAI_ISSUER,
+  CHATMOCK_OPENAI_TOKEN_URL,
+  CHATMOCK_CALLBACK_PORT,
+  CHATMOCK_CALLBACK_BASE,
+  RESEARCH_TIMEOUT_MS,
+  RESEARCH_USER_AGENT,
+  OPENAI_CHATMOCK_MODEL_FALLBACKS,
+  AGENT_MANAGEMENT_PROFILES,
+  CONNECT_AI_OPERATING_POLICY,
+  PAPERCLIP_AGENT_MANAGEMENT_SOURCE,
+  AGENT_MANAGER_TABS
 };

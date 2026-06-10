@@ -322,7 +322,10 @@
     "web": "node scripts/web-server.js",
     "web:dev": "node scripts/web-server.js",
     "web:check": "node --check scripts/web-server.js && node --check web/app.js && node --check scripts/web-e2e.js && node --check scripts/research-security-qa.js && node --check scripts/web-ui-qa.js && node --check scripts/qa-all.js && node scripts/research-security-qa.js && node scripts/web-ui-qa.js",
-    "web:e2e": "node scripts/web-e2e.js"
+    "web:e2e": "node scripts/web-e2e.js",
+    "web-next:dev": "cd web-next && npm run dev",
+    "web-next:build": "cd web-next && npm run build",
+    "web-next:start": "cd web-next && npm start"
   },
   "devDependencies": {
     "@types/node": "18.x",

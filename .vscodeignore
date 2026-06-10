@@ -20,6 +20,7 @@ system_schema.json
 !README.md
 !assets/prompts/**/*.md
 !assets/tool-seeds/**/*.md
+!assets/brain-seeds/anntar/**/*.md
 !assets/brain-seeds/templates/**/*.md
 **/*.vsix
 node_modules/**
