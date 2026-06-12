@@ -9049,6 +9049,10 @@ export function activate(context: vscode.ExtensionContext) {
         /* Google Calendar 자동 일정 등록 (OAuth) */
         vscode.commands.registerCommand('connect-ai-lab.connectGoogleCalendarWrite', async () => {
             await runConnectGoogleCalendarWrite();
+        }),
+        /* 전체 화면 채팅 패널 열기 */
+        vscode.commands.registerCommand('connect-ai-lab.openFullScreenChat', () => {
+            provider.openFullScreenPanel();
         })
     );
 }
@@ -15822,6 +15826,13 @@ vscode.postMessage({ type: 'officeReady' });
 
 class SidebarChatProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
+    private _panels: vscode.WebviewPanel[] = [];
+    private _postToAll(msg: any) {
+        try { this._view?.webview.postMessage(msg); } catch {}
+        for (const p of this._panels) {
+            try { p.webview.postMessage(msg); } catch {}
+        }
+    }
     // Sidebar's 1인 기업 모드 toggle. When false, autonomous corp activity
     // (morning briefing, auto cycle, ambient chatter) still runs in the
     // background and writes to the conversation log + office panel, but is
@@ -15880,14 +15891,14 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
        Office panel + sidebar (when corp-mode on) both receive it. */
     public pulseAgent(agent: string, icon: string = '✨', ms: number = 3000, log?: string) {
         this._broadcastCorporate({ type: 'agentPulse', agent, icon, ms, log });
-        try { this._view?.webview.postMessage({ type: 'agentPulse', agent, icon, ms, log }); } catch { /* ignore */ }
+        try { this._postToAll({ type: 'agentPulse', agent, icon, ms, log }); } catch { /* ignore */ }
     }
     private _broadcastCorporate(msg: any) {
         // Sidebar receives corp messages ONLY when its 1인 기업 모드 toggle is ON.
         // The office panel always receives them; the daily conversation log file
         // is written separately by appendConversationLog() upstream.
         if (this._sidebarCorpModeOn) {
-            try { this._view?.webview.postMessage(msg); } catch { /* ignore */ }
+            try { this._postToAll(msg); } catch { /* ignore */ }
         }
         this._corporateBroadcastTargets.forEach(w => {
             try { w.postMessage(msg); } catch { /* disposed */ }
@@ -15924,7 +15935,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     }
     /** Notify the sidebar webview that the office panel opened/closed so it can update its UI. */
     public broadcastOfficeState(open: boolean) {
-        try { this._view?.webview.postMessage({ type: 'officeStateChanged', open }); } catch { /* ignore */ }
+        try { this._postToAll({ type: 'officeStateChanged', open }); } catch { /* ignore */ }
     }
 
     // 외부 (OfficePanel)에서 명령을 받아 corporate 작업 시작
@@ -16015,7 +16026,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 this._currentDispatch = { prompt: job.prompt, priority: job.priority, startedAt: Date.now() };
                 /* 자율 사이클 활동 시그널 */
                 if (job.priority === 'auto') {
-                    try { this._view?.webview.postMessage({ type: 'autoCycleActivity', active: true }); } catch {}
+                    try { this._postToAll({ type: 'autoCycleActivity', active: true }); } catch {}
                 }
                 try {
                     await this._handleCorporatePrompt(job.prompt, job.modelName);
@@ -16026,7 +16037,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     }
                 } finally {
                     if (job.priority === 'auto') {
-                        try { this._view?.webview.postMessage({ type: 'autoCycleActivity', active: false }); } catch {}
+                        try { this._postToAll({ type: 'autoCycleActivity', active: false }); } catch {}
                     }
                     _endActiveDispatch(job.prompt);
                 }
@@ -16149,7 +16160,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
         this._saveHistory();
         // Live, animated card if the sidebar is mounted right now
         if (this._view) {
-            this._view.webview.postMessage({ type: 'brainInject', title, relPath });
+            this._postToAll({ type: 'brainInject', title, relPath });
         }
     }
 
@@ -16158,7 +16169,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
      *  새로고침해서 양쪽이 항상 같은 진실을 본다. */
     public triggerAgentDockReload() {
         if (this._view) {
-            this._view.webview.postMessage({ type: 'agentMapExternallyChanged' });
+            this._postToAll({ type: 'agentMapExternallyChanged' });
         }
     }
 
@@ -16174,7 +16185,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
         this._displayMessages.push({ role: 'ai', text: breadcrumb });
         this._saveHistory();
         if (this._view) {
-            this._view.webview.postMessage({
+            this._postToAll({
                 type: 'skillInject',
                 agentId, agentName: a?.name || agentId, agentEmoji: a?.emoji || '🛠',
                 agentColor: a?.color || '#5DE0E6',
@@ -16325,15 +16336,15 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
         this._activeSessionId = id;
         this._saveHistory();
         if (this._view) {
-            this._view.webview.postMessage({ type: 'clearChat' });
+            this._postToAll({ type: 'clearChat' });
             for (const m of this._displayMessages) {
-                this._view.webview.postMessage({
+                this._postToAll({
                     type: m.role === 'user' ? 'userEcho' : 'response',
                     value: m.text
                 });
             }
-            this._view.webview.postMessage({ type: 'systemNote', value: `📂 "${sess.title}" 이어서 대화하기 (이전 ${sess.messageCount}개 메시지 복원)` });
-            this._view.webview.postMessage({ type: 'activeSession', id, title: sess.title });
+            this._postToAll({ type: 'systemNote', value: `📂 "${sess.title}" 이어서 대화하기 (이전 ${sess.messageCount}개 메시지 복원)` });
+            this._postToAll({ type: 'activeSession', id, title: sess.title });
         }
         return true;
     }
@@ -16357,7 +16368,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             this._closeThinkingPanel();
         }
         if (this._view) {
-            this._view.webview.postMessage({ type: 'thinkingModeState', value: this._thinkingMode });
+            this._postToAll({ type: 'thinkingModeState', value: this._thinkingMode });
         }
     }
 
@@ -16401,7 +16412,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             this._thinkingPanel = undefined;
             this._thinkingReady = false;
             this._thinkingMode = false;
-            if (this._view) this._view.webview.postMessage({ type: 'thinkingModeState', value: false });
+            if (this._view) this._postToAll({ type: 'thinkingModeState', value: false });
         });
         this._thinkingPanel = panel;
     }
@@ -16438,11 +16449,11 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     // 📊 Header status bar — folder + GitHub status, always visible
     // ============================================================
     private _sendCompanyState(noteToUser?: string) {
-        if (!this._view) return;
+        if (!this._view && this._panels.length === 0) return;
         const dir = getCompanyDir();
         const exists = fs.existsSync(path.join(dir, '_shared'));
         const configured = isCompanyConfigured();
-        this._view.webview.postMessage({
+        this._postToAll({
             type: 'corporateState',
             companyDir: dir.replace(os.homedir(), '~'),
             companyName: readCompanyName(),
@@ -16465,7 +16476,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     }
 
     private _sendStatusUpdate() {
-        if (!this._view) return;
+        if (!this._view && this._panels.length === 0) return;
         const cfg = vscode.workspace.getConfiguration('connectAiLab');
         const folderPath = _isBrainDirExplicitlySet() ? _getBrainDir() : '';
         let fileCount = 0;
@@ -16479,7 +16490,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             const out = gitExecSafe(['log', '-1', '--format=%cr'], folderPath);
             if (out) lastSync = out.trim();
         }
-        this._view.webview.postMessage({
+        this._postToAll({
             type: 'statusUpdate',
             value: {
                 folderPath,
@@ -16601,10 +16612,10 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
         this._initHistory();
         this._saveHistory();
         if (this._view) {
-            this._view.webview.postMessage({ type: 'clearChat' });
-            this._view.webview.postMessage({ type: 'activeSession', id: null, title: null });
+            this._postToAll({ type: 'clearChat' });
+            this._postToAll({ type: 'activeSession', id: null, title: null });
             if (archived) {
-                this._view.webview.postMessage({
+                this._postToAll({
                     type: 'systemNote',
                     value: '✅ 이전 대화는 자동 보관됨 (📂 클릭해서 이어서 가능).'
                 });
@@ -16666,7 +16677,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     public focusInput() {
         if (this._view) {
             this._view.show?.(true);
-            this._view.webview.postMessage({ type: 'focusInput' });
+            this._postToAll({ type: 'focusInput' });
         }
     }
 
@@ -16682,7 +16693,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
         this._displayMessages.push({ role: 'ai', text: message });
         this._saveHistory();
         if (this._view) {
-            this._view.webview.postMessage({ type: 'response', value: message });
+            this._postToAll({ type: 'response', value: message });
         }
     }
 
@@ -16786,7 +16797,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             this._view.show?.(true);
             // 약간의 딜레이 후 전송 (뷰가 보이기를 기다림)
             setTimeout(() => {
-                this._view?.webview.postMessage({ type: 'injectPrompt', value: prompt });
+                this._postToAll({ type: 'injectPrompt', value: prompt });
             }, 300);
         } else {
             // Buffer until the sidebar opens; cap to avoid unbounded growth.
@@ -16838,7 +16849,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
            handler renders the same look. Closed-sidebar case relies on the
            restore-from-history path above. */
         if (this._view) {
-            this._view.webview.postMessage({ type: 'systemNote', text, icon });
+            this._postToAll({ type: 'systemNote', text, icon });
         }
     }
     /** Called from resolveWebviewView once _view is ready. */
@@ -16851,26 +16862,15 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 this._telegramMirrorPending = true;
                 this._telegramMirrorSeenAiCount = this._displayMessages.filter(m => m.role === 'ai').length;
             }
-            setTimeout(() => this._view?.webview.postMessage({ type: 'injectPrompt', value: entry.prompt }), 400 + i * 200);
+            setTimeout(() => this._postToAll({ type: 'injectPrompt', value: entry.prompt }), 400 + i * 200);
         });
     }
 
     // --------------------------------------------------------
     // Webview Lifecycle
     // --------------------------------------------------------
-    public resolveWebviewView(
-        webviewView: vscode.WebviewView,
-        _context: vscode.WebviewViewResolveContext,
-        _token: vscode.CancellationToken,
-    ) {
-        this._view = webviewView;
-        webviewView.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this._extensionUri],
-        };
-
-        // 중요: HTML을 그리기 전에 메시지 리스너를 먼저 붙여야 Race Condition이 발생하지 않습니다!
-        webviewView.webview.onDidReceiveMessage(async (msg) => {
+    private _bindWebview(webview: vscode.Webview) {
+        webview.onDidReceiveMessage(async (msg) => {
             /* v2.89.97 — 전체 메시지 핸들러를 try/catch로 감싸 어떤 단일 핸들러
                예외도 후속 메시지 처리를 죽이지 않게. 이전엔 unhandled async
                rejection이 화살표 함수 밖으로 빠져나가 extension host가 사실상
@@ -16907,7 +16907,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             currentModel: map[id] || defaultModel,
                             usingDefault: !map[id],
                         }));
-                        webviewView.webview.postMessage({
+                        webview.postMessage({
                             type: 'agentDockData',
                             installed: installedWithMem,
                             defaultModel,
@@ -16915,7 +16915,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             specs,
                         });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'agentDockData', installed: [], defaultModel: '', agents: [], specs: null, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'agentDockData', installed: [], defaultModel: '', agents: [], specs: null, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -16924,7 +16924,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         const agentId = String(msg.agent || '').trim();
                         const model = String(msg.model || '').trim();
                         if (!agentId || !AGENTS[agentId]) {
-                            webviewView.webview.postMessage({ type: 'agentDockSaved', ok: false, error: `알 수 없는 에이전트: ${agentId}` });
+                            webview.postMessage({ type: 'agentDockSaved', ok: false, error: `알 수 없는 에이전트: ${agentId}` });
                             break;
                         }
                         const map = readAgentModelMap();
@@ -16934,9 +16934,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             delete map[agentId];
                         }
                         writeAgentModelMap(map);
-                        webviewView.webview.postMessage({ type: 'agentDockSaved', ok: true, agent: agentId, model });
+                        webview.postMessage({ type: 'agentDockSaved', ok: true, agent: agentId, model });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'agentDockSaved', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'agentDockSaved', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -16945,9 +16945,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         const installed = await listInstalledModels();
                         const auto = _autoOrchestrateModelMap(installed);
                         writeAgentModelMap(auto);
-                        webviewView.webview.postMessage({ type: 'agentDockAutoMapped', ok: true, map: auto });
+                        webview.postMessage({ type: 'agentDockAutoMapped', ok: true, map: auto });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'agentDockAutoMapped', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'agentDockAutoMapped', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -16955,7 +16955,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     try {
                         const model = String(msg.model || '').trim();
                         if (!model) {
-                            webviewView.webview.postMessage({ type: 'agentDockSaved', ok: false, error: '모델이 비어있어요' });
+                            webview.postMessage({ type: 'agentDockSaved', ok: false, error: '모델이 비어있어요' });
                             break;
                         }
                         const isDefault = model === (getConfig().defaultModel || '');
@@ -16964,9 +16964,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             for (const id of SPECIALIST_IDS) map[id] = model;
                         }
                         writeAgentModelMap(map);
-                        webviewView.webview.postMessage({ type: 'agentDockSaved', ok: true, all: true, model });
+                        webview.postMessage({ type: 'agentDockSaved', ok: true, all: true, model });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'agentDockSaved', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'agentDockSaved', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17006,9 +17006,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             injectedFrom: t.injectedFrom || null,
                             enabled: t.enabled,
                         }));
-                        webviewView.webview.postMessage({ type: 'agentConfigLoaded', agent: msg.agent, goal, ragMode, selfRagCriteria, verifiedCount, telegramConnected, autoOn, tools });
+                        webview.postMessage({ type: 'agentConfigLoaded', agent: msg.agent, goal, ragMode, selfRagCriteria, verifiedCount, telegramConnected, autoOn, tools });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'agentConfigLoaded', agent: msg.agent, goal: '', ragMode: 'standard', selfRagCriteria: '', verifiedCount: 0, telegramConnected: false, autoOn: false, tools: [], error: String(e?.message || e) });
+                        webview.postMessage({ type: 'agentConfigLoaded', agent: msg.agent, goal: '', ragMode: 'standard', selfRagCriteria: '', verifiedCount: 0, telegramConnected: false, autoOn: false, tools: [], error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17030,9 +17030,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                 injectedFrom: t.injectedFrom || null,
                             })),
                         }));
-                        webviewView.webview.postMessage({ type: 'allSkillsLoaded', groups });
+                        webview.postMessage({ type: 'allSkillsLoaded', groups });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'allSkillsLoaded', groups: [], error: String(e?.message || e) });
+                        webview.postMessage({ type: 'allSkillsLoaded', groups: [], error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17041,12 +17041,12 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         const tools = listAgentTools(msg.agent);
                         const tool = tools.find(t => t.name === msg.tool);
                         if (!tool) {
-                            webviewView.webview.postMessage({ type: 'toolConfigLoaded', agent: msg.agent, tool: msg.tool, schema: [], error: '도구를 찾을 수 없어요' });
+                            webview.postMessage({ type: 'toolConfigLoaded', agent: msg.agent, tool: msg.tool, schema: [], error: '도구를 찾을 수 없어요' });
                             break;
                         }
-                        webviewView.webview.postMessage({ type: 'toolConfigLoaded', agent: msg.agent, tool: msg.tool, schema: tool.configSchema });
+                        webview.postMessage({ type: 'toolConfigLoaded', agent: msg.agent, tool: msg.tool, schema: tool.configSchema });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'toolConfigLoaded', agent: msg.agent, tool: msg.tool, schema: [], error: String(e?.message || e) });
+                        webview.postMessage({ type: 'toolConfigLoaded', agent: msg.agent, tool: msg.tool, schema: [], error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17091,25 +17091,25 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     const tools = listAgentTools(msg.agent);
                     const tool = tools.find(t => t.name === msg.tool);
                     if (!tool) {
-                        webviewView.webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'not_found', message: `도구를 찾을 수 없어요: ${msg.tool}` });
+                        webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'not_found', message: `도구를 찾을 수 없어요: ${msg.tool}` });
                         break;
                     }
                     // Pre-flight: warn if any password field is empty. Frontend
                     // already paints these as 🔒 locked, but defense-in-depth.
                     const missing = tool.configSchema.filter(f => f.type === 'password' && (!f.value || String(f.value).trim() === ''));
                     if (missing.length > 0) {
-                        webviewView.webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'missing_config', message: `실행 전에 ${missing.map(f => f.label).join(', ')} 값을 입력해주세요.` });
+                        webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'missing_config', message: `실행 전에 ${missing.map(f => f.label).join(', ')} 값을 입력해주세요.` });
                         break;
                     }
                     const a = AGENTS[msg.agent];
                     const name = a?.name || msg.agent;
                     const model = this.getDefaultModel();
                     if (!model) {
-                        webviewView.webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'no_model', message: '기본 모델이 설정되지 않았어요.' });
+                        webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'no_model', message: '기본 모델이 설정되지 않았어요.' });
                         break;
                     }
                     /* Tell frontend the request was accepted — flip card to running */
-                    webviewView.webview.postMessage({ type: 'toolRunDispatched', agent: msg.agent, tool: msg.tool });
+                    webview.postMessage({ type: 'toolRunDispatched', agent: msg.agent, tool: msg.tool });
                     const prevSidebarBroadcast = this._sidebarCorpModeOn;
                     this._sidebarCorpModeOn = true;
                     this._handleCorporatePrompt(
@@ -17117,10 +17117,10 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         model,
                     )
                         .then(() => {
-                            webviewView.webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: true });
+                            webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: true });
                         })
                         .catch((err: any) => {
-                            webviewView.webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'exec_error', message: String(err?.message || err) });
+                            webview.postMessage({ type: 'toolRunCompleted', agent: msg.agent, tool: msg.tool, ok: false, reason: 'exec_error', message: String(err?.message || err) });
                         })
                         .finally(() => { this._sidebarCorpModeOn = prevSidebarBroadcast; });
                     break;
@@ -17168,20 +17168,20 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         const r = await axios.get(`https://api.telegram.org/bot${encodeURIComponent(token)}/getMe`, { timeout: 8000, validateStatus: () => true });
                         const data = r.data || {};
                         if (data.ok) {
-                            webviewView.webview.postMessage({
+                            webview.postMessage({
                                 type: 'telegramValidateTokenResult', ok: true,
                                 username: data.result?.username || '',
                                 botName: data.result?.first_name || '',
                                 botId: data.result?.id || 0,
                             });
                         } else {
-                            webviewView.webview.postMessage({
+                            webview.postMessage({
                                 type: 'telegramValidateTokenResult', ok: false,
                                 error: data.description || `HTTP ${r.status}`,
                             });
                         }
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'telegramValidateTokenResult', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'telegramValidateTokenResult', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17191,7 +17191,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         const r = await axios.get(`https://api.telegram.org/bot${encodeURIComponent(token)}/getUpdates`, { timeout: 8000, validateStatus: () => true });
                         const data = r.data || {};
                         if (!data.ok) {
-                            webviewView.webview.postMessage({ type: 'telegramDetectChatIdResult', ok: false, error: data.description || `HTTP ${r.status}` });
+                            webview.postMessage({ type: 'telegramDetectChatIdResult', ok: false, error: data.description || `HTTP ${r.status}` });
                             break;
                         }
                         // Pull unique chats (private only, prefer most recent)
@@ -17207,9 +17207,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             const name = c.first_name ? `${c.first_name}${c.last_name ? ' ' + c.last_name : ''}` : (c.title || c.username || `Chat ${c.id}`);
                             chats.push({ id: c.id, name });
                         }
-                        webviewView.webview.postMessage({ type: 'telegramDetectChatIdResult', ok: true, chats });
+                        webview.postMessage({ type: 'telegramDetectChatIdResult', ok: true, chats });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'telegramDetectChatIdResult', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'telegramDetectChatIdResult', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17225,12 +17225,12 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         }, { timeout: 8000, validateStatus: () => true });
                         const data = r.data || {};
                         if (data.ok) {
-                            webviewView.webview.postMessage({ type: 'telegramSendTestResult', ok: true });
+                            webview.postMessage({ type: 'telegramSendTestResult', ok: true });
                         } else {
-                            webviewView.webview.postMessage({ type: 'telegramSendTestResult', ok: false, error: data.description || `HTTP ${r.status}` });
+                            webview.postMessage({ type: 'telegramSendTestResult', ok: false, error: data.description || `HTTP ${r.status}` });
                         }
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'telegramSendTestResult', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'telegramSendTestResult', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17248,9 +17248,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         cur.TELEGRAM_BOT_TOKEN = String(msg.token || '').trim();
                         cur.TELEGRAM_CHAT_ID   = String(msg.chatId || '').trim();
                         fs.writeFileSync(p, JSON.stringify(cur, null, 2));
-                        webviewView.webview.postMessage({ type: 'telegramSaveSetupResult', ok: true });
+                        webview.postMessage({ type: 'telegramSaveSetupResult', ok: true });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'telegramSaveSetupResult', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'telegramSaveSetupResult', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17283,7 +17283,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     const name = a?.name || msg.agent;
                     const model = this.getDefaultModel();
                     if (!model) {
-                        webviewView.webview.postMessage({ type: 'error', value: '⚠️ 기본 모델이 설정되지 않았어요.' });
+                        webview.postMessage({ type: 'error', value: '⚠️ 기본 모델이 설정되지 않았어요.' });
                         break;
                     }
                     const prevSidebarBroadcast = this._sidebarCorpModeOn;
@@ -17325,7 +17325,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         error = e?.message || String(e);
                     }
                     if (this._view) {
-                        this._view.webview.postMessage({ type: 'ideModelsProbed', models, error });
+                        this._postToAll({ type: 'ideModelsProbed', models, error });
                     }
                     break;
                 }
@@ -17340,7 +17340,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     try { await axios.get('http://127.0.0.1:1234/v1/models', { timeout: 1000 }); engineDetected = 'LM Studio'; }
                     catch { try { await axios.get('http://127.0.0.1:11434/api/tags', { timeout: 1000 }); engineDetected = 'Ollama'; } catch {} }
                     if (this._view) {
-                        this._view.webview.postMessage({
+                        this._postToAll({
                             type: 'onboardingState',
                             dismissed,
                             steps: {
@@ -17374,7 +17374,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         } catch {}
                     }
                     if (this._view) {
-                        this._view.webview.postMessage({ type: 'engineDetected', engine: detected, model: detail });
+                        this._postToAll({ type: 'engineDetected', engine: detected, model: detail });
                     }
                     break;
                 }
@@ -17386,21 +17386,21 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     if (picked && picked[0]) {
                         const cfg = vscode.workspace.getConfiguration('connectAiLab');
                         try { await cfg.update('localBrainPath', picked[0].fsPath, vscode.ConfigurationTarget.Global); } catch {}
-                        if (this._view) this._view.webview.postMessage({ type: 'brainFolderPicked', path: picked[0].fsPath });
+                        if (this._view) this._postToAll({ type: 'brainFolderPicked', path: picked[0].fsPath });
                     }
                     break;
                 }
                 case 'setSecondBrainRepo': {
                     const url = String(msg.value || '').trim();
                     if (url && !validateGitRemoteUrl(url)) {
-                        if (this._view) this._view.webview.postMessage({ type: 'githubRepoResult', ok: false, error: '유효한 GitHub URL이 아닙니다' });
+                        if (this._view) this._postToAll({ type: 'githubRepoResult', ok: false, error: '유효한 GitHub URL이 아닙니다' });
                         break;
                     }
                     try {
                         const cfg = vscode.workspace.getConfiguration('connectAiLab');
                         await cfg.update('secondBrainRepo', url, vscode.ConfigurationTarget.Global);
                     } catch {}
-                    if (this._view) this._view.webview.postMessage({ type: 'githubRepoResult', ok: true, url });
+                    if (this._view) this._postToAll({ type: 'githubRepoResult', ok: true, url });
                     break;
                 }
                 case 'dismissOnboarding': {
@@ -17419,7 +17419,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         if (configured) this.maybeMorningBriefing(this._ctx);
                         if (this._view) {
                             const view = this._view;
-                            this._view.webview.postMessage({
+                            this._postToAll({
                                 type: 'corporateReady',
                                 agents: AGENT_ORDER.map(id => {
                                     // Prefer high-res custom portrait when it exists. When absent,
@@ -17457,7 +17457,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             });
                         }
                     } catch (e: any) {
-                        if (this._view) this._view.webview.postMessage({ type: 'error', value: `⚠️ 회사 폴더 초기화 실패: ${e.message}` });
+                        if (this._view) this._postToAll({ type: 'error', value: `⚠️ 회사 폴더 초기화 실패: ${e.message}` });
                     }
                     break;
                 case 'openCompanyFolder':
@@ -17507,7 +17507,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                 const targetName = path.basename(url, '.git');
                                 const target = path.join(targetParent, targetName);
                                 if (fs.existsSync(target)) {
-                                    this._view?.webview.postMessage({ type: 'error', value: `⚠️ 이미 존재하는 폴더: ${target}\n다른 이름으로 다시 시도하거나 폴더를 먼저 정리해주세요.` });
+                                    this._postToAll({ type: 'error', value: `⚠️ 이미 존재하는 폴더: ${target}\n다른 이름으로 다시 시도하거나 폴더를 먼저 정리해주세요.` });
                                 } else {
                                     const r = gitRun(['clone', url, target], targetParent, 60000);
                                     if (r.status === 0) {
@@ -17517,7 +17517,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                         ensureCompanyStructure();
                                         this._sendCompanyState(`✅ 가져오기 완료: ${candidate}`);
                                     } else {
-                                        this._view?.webview.postMessage({ type: 'error', value: `⚠️ git clone 실패: ${r.stderr || r.error?.message || 'unknown'}` });
+                                        this._postToAll({ type: 'error', value: `⚠️ git clone 실패: ${r.stderr || r.error?.message || 'unknown'}` });
                                     }
                                 }
                             } else {
@@ -17525,7 +17525,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             }
                         }
                     } catch (e: any) {
-                        this._view?.webview.postMessage({ type: 'error', value: `⚠️ 회사 설정 실패: ${e.message}` });
+                        this._postToAll({ type: 'error', value: `⚠️ 회사 설정 실패: ${e.message}` });
                     }
                     break;
                 }
@@ -17546,7 +17546,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         const namedTxt = (a.name || '').trim();
                         this._sendCompanyState(namedTxt ? `✅ "${namedTxt}" 설정 완료. 명령을 내려보세요.` : `✅ 회사 설정 저장 완료.`);
                     } catch (e: any) {
-                        this._view?.webview.postMessage({ type: 'error', value: `⚠️ 인터뷰 저장 실패: ${e.message}` });
+                        this._postToAll({ type: 'error', value: `⚠️ 인터뷰 저장 실패: ${e.message}` });
                     }
                     break;
                 }
@@ -17554,9 +17554,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     try {
                         ensureCompanyStructure();
                         const cfg = readCompanyConfig();
-                        webviewView.webview.postMessage({ type: 'companyConfigLoaded', config: cfg });
+                        webview.postMessage({ type: 'companyConfigLoaded', config: cfg });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'companyConfigLoaded', config: null, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'companyConfigLoaded', config: null, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17565,9 +17565,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         writeCompanyConfig(msg.config || {});
                         const named = ((msg.config && msg.config.name) || '').trim();
                         this._sendCompanyState(named ? `✅ "${named}" 설정 저장됨.` : `✅ 회사 설정 저장됨.`);
-                        webviewView.webview.postMessage({ type: 'companyConfigSaved', ok: true });
+                        webview.postMessage({ type: 'companyConfigSaved', ok: true });
                     } catch (e: any) {
-                        webviewView.webview.postMessage({ type: 'companyConfigSaved', ok: false, error: String(e?.message || e) });
+                        webview.postMessage({ type: 'companyConfigSaved', ok: false, error: String(e?.message || e) });
                     }
                     break;
                 }
@@ -17587,7 +17587,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         };
                     });
                     try {
-                        this._view?.webview.postMessage({
+                        this._postToAll({
                             type: 'sessionsList',
                             value: sessions,
                             currentWorkspace: cur.workspace,
@@ -17602,7 +17602,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     if (!id) break;
                     const ok = this._restoreSession(id);
                     if (!ok) {
-                        try { this._view?.webview.postMessage({ type: 'systemNote', value: '⚠️ 세션을 찾을 수 없어요.' }); } catch { /* ignore */ }
+                        try { this._postToAll({ type: 'systemNote', value: '⚠️ 세션을 찾을 수 없어요.' }); } catch { /* ignore */ }
                     }
                     break;
                 }
@@ -17629,7 +17629,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             messageCount: ss.messageCount,
                         };
                     });
-                    try { this._view?.webview.postMessage({ type: 'sessionsList', value: out, currentWorkspace: cur.workspace, currentWorkspaceName: cur.workspaceName, activeSessionId: this._activeSessionId }); } catch { /* ignore */ }
+                    try { this._postToAll({ type: 'sessionsList', value: out, currentWorkspace: cur.workspace, currentWorkspaceName: cur.workspaceName, activeSessionId: this._activeSessionId }); } catch { /* ignore */ }
                     break;
                 }
                 case 'deleteSession': {
@@ -17647,7 +17647,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             messageCount: ss.messageCount,
                         };
                     });
-                    try { this._view?.webview.postMessage({ type: 'sessionsList', value: sessions, currentWorkspace: cur.workspace, currentWorkspaceName: cur.workspaceName, activeSessionId: this._activeSessionId }); } catch { /* ignore */ }
+                    try { this._postToAll({ type: 'sessionsList', value: sessions, currentWorkspace: cur.workspace, currentWorkspaceName: cur.workspaceName, activeSessionId: this._activeSessionId }); } catch { /* ignore */ }
                     break;
                 }
                 /* v2.89.107 — 활성/비활성 토글 (사이드바). PIN 안 받음. */
@@ -17656,18 +17656,18 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     const want = !!(msg as any).active;
                     if (!aid) break;
                     if (ALWAYS_ON_AGENTS.has(aid)) {
-                        try { this._view?.webview.postMessage({ type: 'systemNote', value: `⚠️ ${AGENTS[aid]?.name || aid}는 핵심 에이전트라 비활성화할 수 없어요.` }); } catch { /* ignore */ }
+                        try { this._postToAll({ type: 'systemNote', value: `⚠️ ${AGENTS[aid]?.name || aid}는 핵심 에이전트라 비활성화할 수 없어요.` }); } catch { /* ignore */ }
                         break;
                     }
                     if (LOCKED_AGENTS_DEFAULT[aid] && want) {
-                        try { this._view?.webview.postMessage({ type: 'systemNote', value: `🔒 ${AGENTS[aid]?.name || aid}는 PIN 인증이 필요해요. 카드를 클릭해 PIN을 입력하세요.` }); } catch { /* ignore */ }
+                        try { this._postToAll({ type: 'systemNote', value: `🔒 ${AGENTS[aid]?.name || aid}는 PIN 인증이 필요해요. 카드를 클릭해 PIN을 입력하세요.` }); } catch { /* ignore */ }
                         break;
                     }
                     const ok = setAgentActive(aid, want);
                     if (ok) {
                         const verb = want ? '활성화됨 ✅' : '비활성화됨 ⏸';
-                        try { this._view?.webview.postMessage({ type: 'systemNote', value: `${AGENTS[aid]?.emoji || ''} ${AGENTS[aid]?.name || aid} ${verb}` }); } catch { /* ignore */ }
-                        try { this._view?.webview.postMessage({ type: 'activeAgents', value: readActiveAgents() }); } catch { /* ignore */ }
+                        try { this._postToAll({ type: 'systemNote', value: `${AGENTS[aid]?.emoji || ''} ${AGENTS[aid]?.name || aid} ${verb}` }); } catch { /* ignore */ }
+                        try { this._postToAll({ type: 'activeAgents', value: readActiveAgents() }); } catch { /* ignore */ }
                         /* v2.89.112 — 코다리 첫 활성화 시 시니어 코더 모델 추천 카드 */
                         if (want && aid === 'developer') {
                             try { if (this._view) _maybeRecommendCoderModel(this._view.webview); } catch { /* ignore */ }
@@ -17676,7 +17676,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             if (CompanyDashboardPanel.current) CompanyDashboardPanel.current.refresh();
                         } catch { /* ignore */ }
                     } else {
-                        try { this._view?.webview.postMessage({ type: 'systemNote', value: `⚠️ 변경 실패: 회사 폴더 쓰기 권한 확인.` }); } catch { /* ignore */ }
+                        try { this._postToAll({ type: 'systemNote', value: `⚠️ 변경 실패: 회사 폴더 쓰기 권한 확인.` }); } catch { /* ignore */ }
                     }
                     break;
                 }
@@ -17690,18 +17690,18 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         if (!aid || !LOCKED_AGENTS_DEFAULT[aid]) break;
                         /* 잠긴 에이전트만 PIN 게이트 통과 가능. PIN 없거나 다르면 거부. */
                         if (pin !== '0000') {
-                            try { this._view?.webview.postMessage({ type: 'systemNote', value: '❌ 인증 실패: 잘못된 코드입니다.' }); } catch { /* ignore */ }
+                            try { this._postToAll({ type: 'systemNote', value: '❌ 인증 실패: 잘못된 코드입니다.' }); } catch { /* ignore */ }
                             break;
                         }
                         const ok = markAgentHired(aid);
                         if (!ok) {
-                            try { this._view?.webview.postMessage({ type: 'systemNote', value: '⚠️ 채용 실패: 회사 폴더에 쓰기 권한이 없습니다.' }); } catch { /* ignore */ }
+                            try { this._postToAll({ type: 'systemNote', value: '⚠️ 채용 실패: 회사 폴더에 쓰기 권한이 없습니다.' }); } catch { /* ignore */ }
                             break;
                         }
                         try { vscode.window.showInformationMessage(`🎉 ${aid} 에이전트 채용 완료! 이제 활용 가능합니다.`); } catch { /* ignore */ }
                         /* 사이드바에 즉시 동기화 + 대쉬보드 패널 열려있으면 거기도 refresh */
                         try {
-                            this._view?.webview.postMessage({ type: 'hiredAgents', value: readHiredAgents() });
+                            this._postToAll({ type: 'hiredAgents', value: readHiredAgents() });
                         } catch { /* ignore */ }
                         try {
                             if (CompanyDashboardPanel.current) CompanyDashboardPanel.current.refresh();
@@ -17787,6 +17787,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         await this._handlePrompt(this._lastPrompt, this._lastModel || '');
                     }
                     break;
+                case 'openFullScreen':
+                    this.openFullScreenPanel();
+                    break;
             }
             } catch (msgErr: any) {
                 /* v2.89.97 — 메시지 처리 중 어떤 예외든 잡힘. 사용자에게 정확한
@@ -17796,13 +17799,49 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 const stack = msgErr?.stack ? String(msgErr.stack).split('\n').slice(0, 4).join('\n') : '';
                 console.error('[Connect AI] message handler 예외:', stack || msgErr);
                 try {
-                    webviewView.webview.postMessage({
+                    webview.postMessage({
                         type: 'error',
                         value: `⚠️ 메시지 처리 중 오류 (type=${(msg as any)?.type || '?'}): ${msgErr?.message || msgErr}\n\n복구 방법:\n  1) VS Code/Cursor 재시작\n  2) 그래도 안 되면 Cmd/Ctrl+Shift+P → "Developer: Reload Window"\n\n[stack]\n${stack}`
                     });
                 } catch { /* webview gone */ }
             }
         });
+
+    }
+
+    public openFullScreenPanel() {
+        const panel = vscode.window.createWebviewPanel(
+            'connectAiLab.fullScreenChat',
+            '✦ Connect AI — Full Screen',
+            vscode.ViewColumn.One,
+            { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [this._extensionUri] }
+        );
+        this._panels.push(panel);
+        panel.webview.html = this._getHtml();
+        this._bindWebview(panel.webview);
+        panel.onDidDispose(() => {
+            const idx = this._panels.indexOf(panel);
+            if (idx >= 0) this._panels.splice(idx, 1);
+        });
+        // Sync initial state
+        try { panel.webview.postMessage({ type: 'companyMetrics', metrics: getCompanyMetrics() }); } catch {}
+        try { this._sendCompanyState(); } catch {}
+        try { this._restoreDisplayMessages(); } catch {}
+    }
+
+    public resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        _context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken,
+    ) {
+        this._view = webviewView;
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [this._extensionUri],
+        };
+
+        // 중요: HTML을 그리기 전에 메시지 리스너를 먼저 붙여야 Race Condition이 발생하지 않습니다!
+        this._bindWebview(webviewView.webview);
 
         // 리스너를 붙인 후 HTML을 렌더링합니다.
         webviewView.webview.html = this._getHtml();
@@ -17903,13 +17942,13 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 this._initHistory();
                 this._saveHistory();
                 vscode.window.showInformationMessage('시스템 프롬프트가 변경되어 새 대화가 시작되었습니다.');
-                if (this._view) this._view.webview.postMessage({ type: 'clearChat' });
+                if (this._view) this._postToAll({ type: 'clearChat' });
             }
         }
     }
 
     private async _handleInjectLocalBrain(files: any[]) {
-        if (!this._view) return;
+        if (!this._view && this._panels.length === 0) return;
         
         // 폴더 미설정 시 먼저 폴더 선택 강제
         let brainDir: string;
@@ -17938,7 +17977,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
         let injectedTitles: string[] = [];
         const routedAgents = new Set<string>();
 
-        this._view.webview.postMessage({ type: 'response', value: `🧠 **[P-Reinforce 연동 준비]**\n첨부하신 ${files.length}개의 파일을 로컬 두뇌(\`00_Raw/${dateStr}\`)에 입수하고 자동 푸시를 진행합니다.` });
+        this._postToAll({ type: 'response', value: `🧠 **[P-Reinforce 연동 준비]**\n첨부하신 ${files.length}개의 파일을 로컬 두뇌(\`00_Raw/${dateStr}\`)에 입수하고 자동 푸시를 진행합니다.` });
 
         for (const file of files) {
             try {
@@ -17970,7 +18009,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 const a = (AGENTS as any)[id];
                 return a ? `${a.emoji} ${a.name}` : id;
             }).join(', ');
-            this._view.webview.postMessage({ type: 'response', value: `🧠 ${labels} 의 메모리에 새 지식이 자동 연결되었습니다. 다음 사이클부터 활용합니다.` });
+            this._postToAll({ type: 'response', value: `🧠 ${labels} 의 메모리에 새 지식이 자동 연결되었습니다. 다음 사이클부터 활용합니다.` });
         }
         
         const safeTitles = injectedTitles.join(', ');
@@ -17999,7 +18038,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     // Fetch installed Ollama models
     // --------------------------------------------------------
     private async _sendModels() {
-        if (!this._view) { return; }
+        if (!this._view && this._panels.length === 0) { return; }
         const { ollamaBase, defaultModel } = getConfig();
         try {
             const isLMStudio = _isLMStudioEngine(ollamaBase);
@@ -18031,9 +18070,9 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             } else if (!models.includes(defaultModel)) {
                 models.unshift(defaultModel);
             }
-            this._view.webview.postMessage({ type: 'modelsList', value: models });
+            this._postToAll({ type: 'modelsList', value: models });
         } catch {
-            this._view.webview.postMessage({ type: 'modelsList', value: [defaultModel] });
+            this._postToAll({ type: 'modelsList', value: [defaultModel] });
         }
     }
 
@@ -18041,7 +18080,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     // Second Brain Menu (QuickPick)
     // --------------------------------------------------------
     private async _handleBrainMenu() {
-        if (!this._view) { return; }
+        if (!this._view && this._panels.length === 0) { return; }
         
         const brainDir = _getBrainDir();
         const brainFiles = fs.existsSync(brainDir) ? this._findBrainFiles(brainDir) : [];
@@ -18122,7 +18161,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     
                     const newFiles = this._findBrainFiles(selectedPath);
                     vscode.window.showInformationMessage(`✅ 지식 폴더가 변경되었어요! (${newFiles.length}개 지식 파일 발견)`);
-                    this._view.webview.postMessage({ type: 'response', value: `🧠 **지식 폴더 연결 완료!**\n📁 ${selectedPath}\n📄 ${newFiles.length}개의 지식 파일을 읽고 있어요.` });
+                    this._postToAll({ type: 'response', value: `🧠 **지식 폴더 연결 완료!**\n📁 ${selectedPath}\n📄 ${newFiles.length}개의 지식 파일을 읽고 있어요.` });
                 }
                 break;
             }
@@ -18131,7 +18170,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 this._ctx.globalState.update('brainEnabled', true);
                 const refreshedFiles = this._findBrainFiles(brainDir);
                 vscode.window.showInformationMessage(`🔄 지식 새로고침 완료! (${refreshedFiles.length}개)`);
-                this._view.webview.postMessage({ type: 'response', value: `🔄 **지식 새로고침 완료!** ${refreshedFiles.length}개 지식이 연결되어 있어요.\n\n지식 모드가 ON 되었습니다.` });
+                this._postToAll({ type: 'response', value: `🔄 **지식 새로고침 완료!** ${refreshedFiles.length}개 지식이 연결되어 있어요.\n\n지식 모드가 ON 되었습니다.` });
                 break;
             }
             case 'viewGraph': {
@@ -18216,7 +18255,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     // Second Brain (Github Repo Knowledge Sync)
     // --------------------------------------------------------
     private async _syncSecondBrain() {
-        if (!this._view) { return; }
+        if (!this._view && this._panels.length === 0) { return; }
         if (this._isSyncingBrain) {
             vscode.window.showWarningMessage('동기화가 이미 진행 중입니다. 잠시만 기다려주세요!');
             return;
@@ -18252,20 +18291,20 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
 
         // git이 시스템에 없으면 의미 있는 에러로 즉시 종료
         if (!isGitAvailable()) {
-            this._view.webview.postMessage({ type: 'error', value: '⚠️ git이 설치되지 않았습니다.\n\n👉 https://git-scm.com/downloads 에서 설치 후 VS Code를 다시 실행해주세요.' });
+            this._postToAll({ type: 'error', value: '⚠️ git이 설치되지 않았습니다.\n\n👉 https://git-scm.com/downloads 에서 설치 후 VS Code를 다시 실행해주세요.' });
             return;
         }
 
         // 자동 sync와 동시 실행 방지 (data race로 인한 손상 방지)
         if (_autoSyncRunning) {
-            this._view.webview.postMessage({ type: 'response', value: '⏳ 백그라운드에서 자동 동기화가 진행 중입니다. 잠시 후 다시 시도해주세요.' });
+            this._postToAll({ type: 'response', value: '⏳ 백그라운드에서 자동 동기화가 진행 중입니다. 잠시 후 다시 시도해주세요.' });
             return;
         }
         _autoSyncRunning = true;
         this._isSyncingBrain = true;
         const brainDir = _getBrainDir();
         try {
-            this._view.webview.postMessage({ type: 'response', value: '🔄 **지식 동기화 진행 중...** 내 지식 폴더와 GitHub을 최신 상태로 맞추고 있어요.' });
+            this._postToAll({ type: 'response', value: '🔄 **지식 동기화 진행 중...** 내 지식 폴더와 GitHub을 최신 상태로 맞추고 있어요.' });
 
             if (!fs.existsSync(brainDir)) {
                 fs.mkdirSync(brainDir, { recursive: true });
@@ -18328,7 +18367,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             '☁️ GitHub 내용으로 덮어쓰기'
                         );
                         if (!choice) {
-                            this._view.webview.postMessage({ type: 'response', value: '⏸️ 동기화 취소했어요. 내 PC 파일은 그대로 안전합니다.' });
+                            this._postToAll({ type: 'response', value: '⏸️ 동기화 취소했어요. 내 PC 파일은 그대로 안전합니다.' });
                             return;
                         }
                         // 선택 적용 — 자동 병합 실패 시 즉시 재선택 다이얼로그를 띄워 사용자를 메뉴로 돌려보내지 않음
@@ -18357,12 +18396,12 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                     '🛠️ 폴더 열어서 직접 고치기'
                                 );
                                 if (!next) {
-                                    this._view.webview.postMessage({ type: 'response', value: '⏸️ 동기화 취소했어요. 내 PC 파일은 그대로 안전합니다.' });
+                                    this._postToAll({ type: 'response', value: '⏸️ 동기화 취소했어요. 내 PC 파일은 그대로 안전합니다.' });
                                     return;
                                 }
                                 if (next.startsWith('🛠️')) {
                                     await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(brainDir));
-                                    this._view.webview.postMessage({ type: 'response', value: '🛠️ 폴더를 열었어요. 파일을 직접 수정한 뒤, 메뉴에서 다시 동기화를 눌러주세요.' });
+                                    this._postToAll({ type: 'response', value: '🛠️ 폴더를 열었어요. 파일을 직접 수정한 뒤, 메뉴에서 다시 동기화를 눌러주세요.' });
                                     return;
                                 }
                                 activeChoice = next;
@@ -18419,12 +18458,12 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             this._ctx.globalState.update('brainEnabled', true);
 
             vscode.window.showInformationMessage('✅ GitHub 동기화 완료!');
-            this._view.webview.postMessage({ type: 'response', value: `✅ **동기화가 끝났어요!** (브랜치: \`${remoteBranch}\`)\n\n내 PC와 GitHub이 이제 완전히 똑같은 상태예요.\n\n앞으로 AI가 답변할 때 이 지식들을 참고합니다. (지식 모드: 🟢 ON)` });
+            this._postToAll({ type: 'response', value: `✅ **동기화가 끝났어요!** (브랜치: \`${remoteBranch}\`)\n\n내 PC와 GitHub이 이제 완전히 똑같은 상태예요.\n\n앞으로 AI가 답변할 때 이 지식들을 참고합니다. (지식 모드: 🟢 ON)` });
             this._sendStatusUpdate();
         } catch (error: any) {
             const userMsg = error?.message || '알 수 없는 문제가 생겼어요';
             vscode.window.showErrorMessage(`동기화 실패: ${userMsg}`);
-            this._view.webview.postMessage({ type: 'error', value: `⚠️ ${userMsg}` });
+            this._postToAll({ type: 'error', value: `⚠️ ${userMsg}` });
         } finally {
             this._isSyncingBrain = false;
             _autoSyncRunning = false;
@@ -18523,8 +18562,8 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
 
     /** 저장된 대화 메시지를 웹뷰에 다시 전송 (복원) */
     private _restoreDisplayMessages() {
-        if (!this._view || this._displayMessages.length === 0) { return; }
-        this._view.webview.postMessage({
+        if ((!this._view && this._panels.length === 0) || this._displayMessages.length === 0) { return; }
+        this._postToAll({
             type: 'restoreMessages',
             value: this._displayMessages
         });
@@ -18664,7 +18703,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     // Handle prompt with file attachments (multimodal)
     // --------------------------------------------------------
     private async _handlePromptWithFile(prompt: string, modelName: string, files: {name: string, type: string, data: string}[], internetEnabled?: boolean) {
-        if (!this._view) { return; }
+        if (!this._view && this._panels.length === 0) { return; }
 
         try {
             const { ollamaBase, defaultModel, timeout } = getConfig();
@@ -18720,7 +18759,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             const images = imageFiles.map(f => f.data); // already base64
 
             let aiMessage = '';
-            this._view.webview.postMessage({ type: 'streamStart' });
+            this._postToAll({ type: 'streamStart' });
             this._abortController = new AbortController();
 
             if (isLMStudio) {
@@ -18758,7 +18797,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                 if (json.error) {
                                     token = `[API 오류] ${json.error.message || json.error}`;
                                 }
-                                if (token) { aiMessage += token; this._view!.webview.postMessage({ type: 'streamChunk', value: token }); }
+                                if (token) { aiMessage += token; this._postToAll({ type: 'streamChunk', value: token }); }
                             } catch { /* malformed JSON line, skip */ }
                         }
                     });
@@ -18795,7 +18834,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                                 if (json.error) {
                                     token = `[API 오류] ${json.error}`;
                                 }
-                                if (token) { aiMessage += token; this._view!.webview.postMessage({ type: 'streamChunk', value: token }); }
+                                if (token) { aiMessage += token; this._postToAll({ type: 'streamChunk', value: token }); }
                             } catch { /* malformed JSON line, skip */ }
                         }
                     });
@@ -18804,14 +18843,14 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 });
             }
 
-            this._view.webview.postMessage({ type: 'streamEnd' });
+            this._postToAll({ type: 'streamEnd' });
             this._chatHistory.push({ role: 'assistant', content: aiMessage });
 
             const report = await this._executeActions(aiMessage);
             if (report.length > 0) {
                 const reportMsg = `\n\n---\n**에이전트 작업 결과**\n${report.join('\n')}`;
-                this._view.webview.postMessage({ type: 'streamChunk', value: reportMsg });
-                this._view.webview.postMessage({ type: 'streamEnd' });
+                this._postToAll({ type: 'streamChunk', value: reportMsg });
+                this._postToAll({ type: 'streamEnd' });
                 aiMessage += reportMsg;
             }
             this._displayMessages.push({ text: this._stripActionTags(aiMessage), role: 'ai' });
@@ -18838,7 +18877,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 errMsg = `⚠️ 오류: ${error.message}`;
             }
 
-            this._view.webview.postMessage({ type: 'error', value: errMsg });
+            this._postToAll({ type: 'error', value: errMsg });
 
             // Axios의 타입이 stream일 때 에러 본문을 파싱해서 원인을 명확히 로그에 남김
             if (error.response?.data?.on) {
@@ -18848,7 +18887,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                     try {
                         const parsed = JSON.parse(buf);
                         if (parsed.error?.message) {
-                            this._view!.webview.postMessage({ type: 'error', value: `⚠️ API 자세한 오류: ${parsed.error.message}` });
+                            this._postToAll({ type: 'error', value: `⚠️ API 자세한 오류: ${parsed.error.message}` });
                         }
                     } catch { /* ignore parsing err */ }
                 });
@@ -18860,7 +18899,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
     // Handle user prompt → Ollama → agent actions → response
     // --------------------------------------------------------
     private async _handlePrompt(prompt: string, modelName: string, internetEnabled?: boolean) {
-        if (!this._view) { return; }
+        if (!this._view && this._panels.length === 0) { return; }
 
         try {
             // 1. Context: active editor content
@@ -18923,7 +18962,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             let aiMessage = '';
 
             // 스트리밍: 웹뷰에 'streamStart' 로 빈 메시지 생성 후 'streamChunk'로 실시간 업데이트
-            this._view.webview.postMessage({ type: 'streamStart' });
+            this._postToAll({ type: 'streamStart' });
             this._lastPrompt = prompt;
             this._lastModel = modelName;
             this._abortController = new AbortController();
@@ -19012,7 +19051,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             }
                             if (token) {
                                 aiMessage += token;
-                                this._view!.webview.postMessage({ type: 'streamChunk', value: token });
+                                this._postToAll({ type: 'streamChunk', value: token });
                                 // 🎬 Live thinking detection — fire as soon as a tag is closed
                                 detectBrainReadsLive();
                                 if (this._shouldEmitThinking()) {
@@ -19056,12 +19095,12 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                         fetchedContent += `\n\n[WEB CONTENT: ${url}]\n${cleaned.slice(0, 15000)}\n`;
                         const msg = `\n\n> 🌐 **[웹 검색 완료]** ${url} (${cleaned.length}자)\n\n`;
                         uiFeedbackStr += msg;
-                        this._view.webview.postMessage({ type: 'streamChunk', value: msg });
+                        this._postToAll({ type: 'streamChunk', value: msg });
                     } catch (err: any) {
                         fetchedContent += `\n\n[WEB CONTENT: ${url}] (FAILED: ${err.message})\n`;
                         const msg = `\n\n> 🌐 **[웹 검색 실패]** ${url} - ${err.message}\n\n`;
                         uiFeedbackStr += msg;
-                        this._view.webview.postMessage({ type: 'streamChunk', value: msg });
+                        this._postToAll({ type: 'streamChunk', value: msg });
                     }
                 }
 
@@ -19071,7 +19110,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 if (brainReads.length > 0) {
                     const msg = `\n\n> 🧠 **[Second Brain 열람 완료]** 스캔한 핵심 지식을 바탕으로 답변을 구성합니다...\n\n`;
                     uiFeedbackStr += msg;
-                    this._view.webview.postMessage({ type: 'streamChunk', value: msg });
+                    this._postToAll({ type: 'streamChunk', value: msg });
                 }
                 
                 reqMessages.push({ role: 'assistant', content: cleanedResponse || '탐색을 진행 중입니다...' });
@@ -19114,7 +19153,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
 
                                 if (token) {
                                     aiMessage += token;
-                                    this._view!.webview.postMessage({ type: 'streamChunk', value: token });
+                                    this._postToAll({ type: 'streamChunk', value: token });
                                     if (this._shouldEmitThinking()) {
                                         this._postThinking({ type: 'answer_chunk', text: token });
                                     }
@@ -19128,7 +19167,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             }
 
             // 모든 스트리밍(1차 및 2차)이 끝난 후, 박스 포장 완료
-            this._view.webview.postMessage({ type: 'streamEnd' });
+            this._postToAll({ type: 'streamEnd' });
 
             this._chatHistory.push({ role: 'assistant', content: aiMessage });
 
@@ -19138,8 +19177,8 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
             // 6. Agent report 추가 (있을 때만)
             if (report.length > 0) {
                 const reportMsg = `\n\n---\n**에이전트 작업 결과**\n${report.join('\n')}`;
-                this._view.webview.postMessage({ type: 'streamChunk', value: reportMsg });
-                this._view.webview.postMessage({ type: 'streamEnd' });
+                this._postToAll({ type: 'streamChunk', value: reportMsg });
+                this._postToAll({ type: 'streamEnd' });
                 aiMessage += reportMsg;
             }
 
@@ -19151,7 +19190,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 .map(m => m[1].trim()).filter(s => s.length > 0);
             const uniqueSources = [...new Set(allBrainReads)];
             if (uniqueSources.length > 0) {
-                this._view.webview.postMessage({ type: 'attachCitations', sources: uniqueSources });
+                this._postToAll({ type: 'attachCitations', sources: uniqueSources });
             }
             if (this._shouldEmitThinking()) {
                 this._postThinking({ type: 'answer_complete', sources: uniqueSources });
@@ -19176,7 +19215,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                 errMsg = `⚠️ 오류: ${error.message}`;
             }
             
-            this._view.webview.postMessage({ type: 'error', value: errMsg });
+            this._postToAll({ type: 'error', value: errMsg });
 
             /* If this prompt came from Telegram, surface the failure there too —
                the user should never be left wondering why their bot went silent. */
@@ -19197,7 +19236,7 @@ class SidebarChatProvider implements vscode.WebviewViewProvider {
                             detail = '프로젝트 정보가 모델의 기억 용량(Context Length)을 초과했어요.\n💡 LM Studio에서 모델을 다시 로드할 때, 오른쪽 패널의 [Context Length] 슬라이더를 8192 이상으로 올려주세요.';
                         }
                         if (detail) {
-                            this._view!.webview.postMessage({ type: 'error', value: `💡 가이드: ${detail}` });
+                            this._postToAll({ type: 'error', value: `💡 가이드: ${detail}` });
                         }
                     } catch { /* ignore */ }
                 });
@@ -20728,7 +20767,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                _handleCorporatePrompt(casual chat·shortcut·multi-agent 다 포함) 끝나면
                webview는 여전히 "응답 중" 상태로 입력 막혀있었음. 사용자가 정지 버튼을
                눌러야 풀리는 사고. 어떤 경로로 끝나든 finally에서 streamEnd 보장. */
-            try { this._view?.webview.postMessage({ type: 'streamEnd' }); } catch { /* ignore */ }
+            try { this._postToAll({ type: 'streamEnd' }); } catch { /* ignore */ }
         }
     }
 
@@ -21630,7 +21669,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
             // (corporate 모드는 카드 뷰에서 별도 처리 — opts.appendToOutput 만 채움)
             const headerMsg = `\n\n\`\`\`bash\n$ ${cmd}\n`;
             if (!opts?.appendToOutput) {
-                this._view?.webview.postMessage({ type: 'streamChunk', value: headerMsg });
+                this._postToAll({ type: 'streamChunk', value: headerMsg });
             }
 
             try {
@@ -21639,11 +21678,11 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
                    맞추는 게 자연스러움. 짧은 명령은 어차피 빨리 끝나니까 손해 없음. */
                 const result = await runCommandCaptured(cmd, rootPath, (chunk) => {
                     if (!opts?.appendToOutput) {
-                        this._view?.webview.postMessage({ type: 'streamChunk', value: chunk });
+                        this._postToAll({ type: 'streamChunk', value: chunk });
                     }
                 }, 25 * 60 * 1000);
                 if (!opts?.appendToOutput) {
-                    this._view?.webview.postMessage({ type: 'streamChunk', value: '\n```\n' });
+                    this._postToAll({ type: 'streamChunk', value: '\n```\n' });
                 }
 
                 const status = result.timedOut
@@ -21660,7 +21699,7 @@ ${catalog.map((c, i) => `${i + 1}. agent=${c.agentId} tool=${c.tool} — ${c.des
             } catch (err: any) {
                 report.push(`❌ 명령 실패: \`${cmd}\` — ${err.message}`);
                 if (!opts?.appendToOutput) {
-                    this._view?.webview.postMessage({ type: 'streamChunk', value: `\n[실행 오류] ${err.message}\n\`\`\`\n` });
+                    this._postToAll({ type: 'streamChunk', value: `\n[실행 오류] ${err.message}\n\`\`\`\n` });
                 }
             }
         }

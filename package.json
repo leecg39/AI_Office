@@ -80,6 +80,10 @@
         "title": "Connect AI: Google Calendar 자동 일정 연결 📅"
       },
       {
+        "command": "connect-ai-lab.openFullScreenChat",
+        "title": "Connect AI: 전체 화면 채팅 열기 ✦"
+      },
+      {
         "command": "connectAiLab.tasks.refresh",
         "title": "할 일 새로고침",
         "category": "Connect AI",

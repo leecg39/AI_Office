@@ -656,11 +656,18 @@ h2 { font-size: 18px; }
   color: var(--accent);
 }
 
+.command-route {
+  color: var(--accent);
+}
+
 .flow-track,
 .flow-line,
 .flow-pulse,
 .flow-motion-path,
-.flow-direction {
+.flow-direction,
+.command-track,
+.command-line,
+.command-motion-path {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -700,6 +707,26 @@ h2 { font-size: 18px; }
   stroke: currentColor;
   stroke-width: 0.85;
   opacity: 0.86;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+.command-track {
+  stroke: rgba(92, 214, 255, 0.18);
+  stroke-width: 3.2;
+}
+
+.command-line {
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-dasharray: 6 4;
+  stroke-dashoffset: 0;
+  animation: commandFlow 1.6s linear infinite;
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+.command-node {
+  fill: currentColor;
+  opacity: 0.9;
   filter: drop-shadow(0 0 4px currentColor);
 }
 
@@ -813,6 +840,10 @@ h2 { font-size: 18px; }
 
 @keyframes floorFlow {
   to { stroke-dashoffset: -24; }
+}
+
+@keyframes commandFlow {
+  to { stroke-dashoffset: -20; }
 }
 
 @keyframes floorPulse {
@@ -2527,6 +2558,7 @@ button.danger-outline {
 
 @media (prefers-reduced-motion: reduce) {
   .flow-line,
+  .command-line,
   .flow-pulse,
   .office-agent-marker.working {
     animation: none;

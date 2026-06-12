@@ -4232,6 +4232,14 @@ function buildDashboard(config) {
   const pendingApprovals = approvals.filter((approval) => approval.status === 'pending');
   const companyState = readCompanyState(config);
   const activeAgents = readActiveAgents(config);
+  const commandRoutes = openTasks
+    .filter((task) => task.fromAgent && task.fromAgent !== task.agent)
+    .map((task) => ({
+      id: task.id,
+      from: task.fromAgent,
+      to: task.agent,
+      title: task.title
+    }));
   const baseAgents = AGENTS.map((agent) => {
     const local = getAgent(state, agent.id);
     const activeFlag = activeAgents[agent.id];
@@ -4290,6 +4298,7 @@ function buildDashboard(config) {
       pending: pendingApprovals.length,
       all: approvals
     },
+    commandRoutes,
     sessions: state.sessions.slice(0, 10).map((session) => ({
       id: session.id,
       title: session.title,
@@ -4325,12 +4334,14 @@ async function handleTasks(req, res, pathname, config) {
       return true;
     }
     const agent = AGENTS.some((item) => item.id === body.agent) ? body.agent : 'ceo';
+    const fromAgent = AGENTS.some((item) => item.id === body.fromAgent) ? body.fromAgent : '';
     const task = {
       id: newId('task'),
       title,
       description: cleanText(body.description, 1000),
       agent,
       agentIds: [agent],
+      fromAgent,
       priority: ['urgent', 'high', 'normal', 'low'].includes(body.priority) ? body.priority : 'normal',
       status: 'open',
       autoRun: body.autoRun === true,
@@ -5019,6 +5030,7 @@ module.exports = {
   runAutoResearch,
   listTasks,
   enrichTask,
+  handleTasks,
   pushEvent,
   getAgent,
   modelErrorMessage,

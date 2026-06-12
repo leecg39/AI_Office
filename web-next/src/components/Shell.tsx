@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface Agent {
   id: string;
@@ -24,6 +24,7 @@ interface Dashboard {
   brain: { fileCount: number; capped: boolean };
   sessions: { id: string; title: string }[];
   events: { title: string; createdAt: string }[];
+  commandRoutes?: { id: string; from: string; to: string; title: string }[];
 }
 
 export default function Shell() {
@@ -31,6 +32,11 @@ export default function Shell() {
   const [selectedAgent, setSelectedAgent] = useState('ceo');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [resultCollapsed, setResultCollapsed] = useState(true);
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [dragging, setDragging] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
 
   useEffect(() => {
     document.body.classList.toggle('result-collapsed', resultCollapsed);
@@ -52,6 +58,96 @@ export default function Shell() {
 
   const agents = dashboard?.agents || [];
   const currentAgent = agents.find((a) => a.id === selectedAgent) || agents[0];
+
+  const openTasks = (dashboard?.tasks?.all || []).filter(
+    (t: any) => !['done', 'cancelled', 'failed'].includes(t.status || 'open')
+  );
+  const openTasksByAgent = new Map<string, any[]>();
+  openTasks.forEach((task: any) => {
+    const aid = task.agent || '';
+    if (!openTasksByAgent.has(aid)) openTasksByAgent.set(aid, []);
+    openTasksByAgent.get(aid)!.push(task);
+  });
+  const workingAgents = agents.filter((a) => openTasksByAgent.has(a.id));
+
+  function flowPathForPosition(pos: { x: number; y: number }, index: number, total: number) {
+    const step = total > 1 ? 28 / (total - 1) : 0;
+    const startX = 36 + index * step;
+    const startY = 90;
+    const targetX = Math.min(98, Math.max(2, pos.x));
+    const targetY = Math.min(95, Math.max(5, pos.y + 5));
+    const elbowY = Math.min(86, Math.max(28, (startY + targetY) / 2));
+    return `M ${startX.toFixed(2)} ${startY.toFixed(2)} L ${startX.toFixed(2)} ${elbowY.toFixed(2)} L ${targetX.toFixed(2)} ${elbowY.toFixed(2)} L ${targetX.toFixed(2)} ${targetY.toFixed(2)}`;
+  }
+
+  function commandPathForPositions(from: { x: number; y: number }, to: { x: number; y: number }) {
+    const sourceX = Math.min(98, Math.max(2, from.x));
+    const sourceY = Math.min(95, Math.max(5, from.y));
+    const targetX = Math.min(98, Math.max(2, to.x));
+    const targetY = Math.min(95, Math.max(5, to.y));
+    const midX = (sourceX + targetX) / 2;
+    const midY = (sourceY + targetY) / 2;
+    const controlX = midX;
+    const controlY = Math.min(92, Math.max(8, midY - 14));
+    return `M ${sourceX.toFixed(2)} ${sourceY.toFixed(2)} Q ${controlX.toFixed(2)} ${controlY.toFixed(2)} ${targetX.toFixed(2)} ${targetY.toFixed(2)}`;
+  }
+
+  const handleTaskSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const title = (form.querySelector('#taskTitle') as HTMLTextAreaElement)?.value.trim();
+    const agent = (form.querySelector('#taskAgent') as HTMLSelectElement)?.value;
+    const fromAgent = (form.querySelector('#taskFromAgent') as HTMLSelectElement)?.value;
+    const priority = (form.querySelector('#taskPriority') as HTMLSelectElement)?.value;
+    if (!title) return;
+    try {
+      await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description: title, agent, fromAgent, priority, autoRun: true }),
+      });
+      const res = await fetch('/api/dashboard');
+      const data = await res.json();
+      setDashboard(data);
+    } catch (err) {
+      console.error('Task creation failed', err);
+    }
+    (form.querySelector('#taskTitle') as HTMLTextAreaElement).value = '';
+  };
+
+  // Load saved positions from localStorage once dashboard data arrives
+  useEffect(() => {
+    if (!dashboard) return;
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('office-agent-positions') : null;
+    const savedMap = saved ? JSON.parse(saved) : {};
+    const initial: Record<string, { x: number; y: number }> = {};
+    for (const agent of dashboard.agents) {
+      initial[agent.id] = savedMap[agent.id] ?? { x: agent.x ?? 50, y: agent.y ?? 50 };
+    }
+    setPositions(initial);
+  }, [dashboard]);
+
+  const handleMouseDown = (e: React.MouseEvent, agentId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(agentId);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!dragging || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    const next = { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+    setPositions((prev) => ({ ...prev, [dragging]: next }));
+  };
+
+  const handleMouseUp = () => {
+    if (dragging) {
+      localStorage.setItem('office-agent-positions', JSON.stringify(positionsRef.current));
+    }
+    setDragging(null);
+  };
 
   return (
     <>
@@ -168,21 +264,100 @@ export default function Shell() {
 
           <div id="dashboardView" className="dashboard-view">
             <section className="overview">
-              <div className="office-map">
+              <div
+                className="office-map"
+                ref={containerRef}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+              >
                 <img src="/assets/office.png" alt="Connect AI office map" />
                 <svg
                   id="officeFlow"
-                  className="office-flow"
+                  className={`office-flow${workingAgents.length === 0 ? ' idle' : ''}`}
                   viewBox="0 0 100 100"
                   preserveAspectRatio="none"
                   aria-hidden="true"
-                ></svg>
+                >
+                  <defs>
+                    <marker
+                      id="flowArrow"
+                      markerWidth="5"
+                      markerHeight="5"
+                      refX="3.9"
+                      refY="2.5"
+                      orient="auto"
+                      markerUnits="strokeWidth"
+                    >
+                      <path d="M 0 0 L 5 2.5 L 0 5 Z" fill="#eaffff" />
+                    </marker>
+                  </defs>
+                  {workingAgents.map((agent, index) => {
+                    const tasks = openTasksByAgent.get(agent.id) || [];
+                    const task = tasks[0] || {};
+                    const pos = { x: positions[agent.id]?.x ?? agent.x ?? 50, y: positions[agent.id]?.y ?? agent.y ?? 50 };
+                    const path = flowPathForPosition(pos, index, workingAgents.length);
+                    const routeId = `flow-route-${agent.id.replace(/[^a-z0-9]/gi, '-')}`;
+                    const accent = agent.accent || '#35c8ff';
+                    const delay = `${(index * -0.32).toFixed(2)}s`;
+                    const titleText = task.title ? `${agent.name}: ${task.title}` : `${agent.name}: 작업 중`;
+                    return (
+                      <g key={agent.id} className="flow-route" style={{ ['--accent' as any]: accent, ['--delay' as any]: delay }}>
+                        <title>{titleText}</title>
+                        <path id={routeId} className="flow-motion-path" d={path} />
+                        <path className="flow-track" d={path} />
+                        <path className="flow-line" d={path} />
+                        <path className="flow-pulse" d={path} />
+                        {[0, 1.55, 3.1].map((offset) => (
+                          <polygon key={offset} className="flow-runner" points="-0.6,-0.48 1.15,0 -0.6,0.48">
+                            <animateMotion
+                              dur="8s"
+                              begin={`${(index * 0.18 + offset).toFixed(2)}s`}
+                              repeatCount="indefinite"
+                              rotate="auto"
+                            >
+                              <mpath href={`#${routeId}`} />
+                            </animateMotion>
+                          </polygon>
+                        ))}
+                        <path className="flow-direction" d={path} markerEnd="url(#flowArrow)" />
+                        <circle className="flow-node" cx={pos.x.toFixed(2)} cy={pos.y.toFixed(2)} r="1.1" />
+                      </g>
+                    );
+                  })}
+                  {(dashboard?.commandRoutes || []).map((route, index) => {
+                    const fromAgent = agents.find((a) => a.id === route.from);
+                    const toAgent = agents.find((a) => a.id === route.to);
+                    if (!fromAgent || !toAgent) return null;
+                    const fromPos = {
+                      x: positions[fromAgent.id]?.x ?? fromAgent.x ?? 50,
+                      y: positions[fromAgent.id]?.y ?? fromAgent.y ?? 50,
+                    };
+                    const toPos = {
+                      x: positions[toAgent.id]?.x ?? toAgent.x ?? 50,
+                      y: positions[toAgent.id]?.y ?? toAgent.y ?? 50,
+                    };
+                    const path = commandPathForPositions(fromPos, toPos);
+                    const routeId = `command-route-${route.id.replace(/[^a-z0-9]/gi, '-')}`;
+                    const accent = fromAgent.accent || '#eaffff';
+                    return (
+                      <g key={route.id} className="command-route" style={{ ['--accent' as any]: accent }}>
+                        <title>{`${fromAgent.name} → ${toAgent.name}: ${route.title}`}</title>
+                        <path id={routeId} className="command-motion-path" d={path} />
+                        <path className="command-track" d={path} />
+                        <path className="command-line" d={path} markerEnd="url(#flowArrow)" />
+                        <circle className="command-node" cx={toPos.x.toFixed(2)} cy={toPos.y.toFixed(2)} r="0.9" />
+                      </g>
+                    );
+                  })}
+                </svg>
                 <div id="officeAgents" className="office-agents" aria-label="Agent work activity">
                   {agents.map((agent) => (
                     <div
                       key={agent.id}
-                      className="office-agent-marker"
-                      style={{ left: `${agent.x ?? 50}%`, top: `${agent.y ?? 50}%`, ['--accent' as any]: agent.accent || '#35c8ff' }}
+                      className={`office-agent-marker${dragging === agent.id ? ' dragging' : ''}`}
+                      style={{ left: `${positions[agent.id]?.x ?? agent.x ?? 50}%`, top: `${positions[agent.id]?.y ?? agent.y ?? 50}%`, ['--accent' as any]: agent.accent || '#35c8ff' }}
+                      onMouseDown={(e) => handleMouseDown(e, agent.id)}
                     >
                       <div className="marker-avatar">
                         {agent.avatar ? (
@@ -221,7 +396,7 @@ export default function Shell() {
                     Refresh
                   </button>
                 </div>
-                <form id="taskForm" className="task-form">
+                <form id="taskForm" className="task-form" onSubmit={handleTaskSubmit}>
                   <textarea
                     id="taskTitle"
                     className="task-context-input"
@@ -230,6 +405,14 @@ export default function Shell() {
                   ></textarea>
                   <div className="task-controls">
                     <select id="taskAgent" aria-label="Agent">
+                      {agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select id="taskFromAgent" aria-label="From Agent">
+                      <option value="">명령 에이전트 (선택)</option>
                       {agents.map((agent) => (
                         <option key={agent.id} value={agent.id}>
                           {agent.name}
