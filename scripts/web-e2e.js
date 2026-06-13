@@ -139,10 +139,14 @@ function assertResearchReportContract(data, label) {
   assert(data.searchedAt, `${label} searchedAt metadata is missing`);
   assert(Array.isArray(data.results), `${label} results is not an array`);
   assert(Array.isArray(data.sources), `${label} sources is not an array`);
+  assert(data.insights && typeof data.insights === 'object', `${label} insights metadata is missing`);
+  assert(data.insights.sourceQuality && typeof data.insights.sourceQuality === 'object', `${label} source quality summary is missing`);
+  assert(Array.isArray(data.insights.nextActions), `${label} next actions are missing`);
   assert(data.count === data.results.length, `${label} count does not match results length`);
   for (const item of data.results) {
     assert(item && item.title && item.url, `${label} result is missing title or URL`);
     assert(!isUnsafeResearchUrl(item.url), `${label} returned unsafe URL: ${item.url}`);
+    assert(item.sourceType && item.sourceQuality && item.sourceReason, `${label} result is missing source quality metadata`);
   }
   for (const source of data.sources) {
     assert(!isUnsafeResearchUrl(source), `${label} returned unsafe source URL: ${source}`);
@@ -150,6 +154,7 @@ function assertResearchReportContract(data, label) {
   if (data.status === 'ok') {
     assert(data.results.length > 0, `${label} status ok returned no results`);
     assert(data.sources.length > 0, `${label} status ok returned no sources`);
+    assert(data.insights.nextActions.length > 0, `${label} status ok did not include next actions`);
   } else {
     assert(data.count === 0, `${label} ${data.status} status should not report a positive count`);
   }

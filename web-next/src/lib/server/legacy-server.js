@@ -2143,6 +2143,104 @@ function mockResearchResults(query, mode = 'ok') {
   };
 }
 
+function researchSourceProfile(rawUrl) {
+  let hostname = '';
+  try {
+    hostname = normalizeResearchHostname(new URL(rawUrl).hostname).replace(/^www\./, '');
+  } catch {
+    return { type: 'unknown', quality: 'low', reason: 'URL 확인 필요' };
+  }
+  if (!hostname) return { type: 'unknown', quality: 'low', reason: 'URL 확인 필요' };
+  if (/(^|\.)gov($|\.)|(^|\.)edu($|\.)|(^|\.)ac\.kr$|(^|\.)go\.kr$/i.test(hostname)) {
+    return { type: 'official', quality: 'high', reason: '공공/교육 기관 출처' };
+  }
+  if (hostname === 'github.com' || hostname.endsWith('.github.io') || hostname === 'gitlab.com') {
+    return { type: 'source-code', quality: 'high', reason: '소스 저장소 또는 개발 문서' };
+  }
+  if (/^(docs?|developers?|developer)\./i.test(hostname)
+    || /(^|\.)((openai|anthropic|microsoft|google|apple|mozilla|w3|vercel|nextjs|react|nodejs)\.com|react\.dev|nodejs\.org)$/i.test(hostname)) {
+    return { type: 'official-docs', quality: 'high', reason: '공식 문서/조직 출처' };
+  }
+  if (/(reuters|apnews|bloomberg|ft|wsj|bbc|nytimes|theverge|techcrunch|wired)\.com$/i.test(hostname)) {
+    return { type: 'news', quality: 'medium', reason: '언론/뉴스 출처' };
+  }
+  if (/(x|twitter|threads|instagram|linkedin|youtube|facebook|tiktok)\.com$/i.test(hostname) || hostname === 'youtu.be') {
+    return { type: 'social', quality: 'medium', reason: '소셜/플랫폼 원문' };
+  }
+  if (/(blog|medium|substack|tistory|naver|velog|wordpress)/i.test(hostname)) {
+    return { type: 'blog', quality: 'low', reason: '개인/커뮤니티 해설 출처' };
+  }
+  return { type: 'web', quality: 'medium', reason: '일반 웹 출처' };
+}
+
+function annotateResearchResult(item) {
+  if (!item || typeof item !== 'object') return item;
+  const profile = researchSourceProfile(item.url || '');
+  return {
+    ...item,
+    sourceType: item.sourceType || profile.type,
+    sourceQuality: item.sourceQuality || profile.quality,
+    sourceReason: item.sourceReason || profile.reason
+  };
+}
+
+function researchQualityCounts(results) {
+  return (Array.isArray(results) ? results : []).reduce((counts, item) => {
+    const quality = item && item.sourceQuality ? item.sourceQuality : 'unknown';
+    counts[quality] = (counts[quality] || 0) + 1;
+    return counts;
+  }, { high: 0, medium: 0, low: 0, unknown: 0 });
+}
+
+function researchNextActions(report) {
+  const status = report && report.status;
+  const results = Array.isArray(report && report.results) ? report.results : [];
+  if (status === 'error') {
+    return [
+      '검색 오류 원인을 먼저 확인하고 같은 query를 mock=1로 계약 검증하세요.',
+      '외부 검색이 막힌 경우 검색어를 줄이거나 source 파라미터를 명시해 재시도하세요.'
+    ];
+  }
+  if (status === 'empty' || results.length === 0) {
+    return [
+      '검색어를 더 구체적인 제품명, 도메인, 날짜, 플랫폼명으로 바꿔 재시도하세요.',
+      '공식 문서나 원문 URL을 알고 있으면 query에 함께 넣어 근거 범위를 좁히세요.'
+    ];
+  }
+  const counts = researchQualityCounts(results);
+  const actions = [];
+  if (counts.high > 0) {
+    actions.push(`높은 신뢰도 출처 ${counts.high}개를 기준 근거로 삼고, 낮은 신뢰도 출처는 보조 맥락으로만 사용하세요.`);
+  } else {
+    actions.push('공식 문서, 원문 저장소, 공공/교육 기관 출처를 추가로 찾아 핵심 주장을 교차 확인하세요.');
+  }
+  if (results.some((item) => !item.excerpt)) {
+    actions.push('중요한 결정 전에는 fetch=1 또는 원문 열기로 본문 맥락을 확인하세요.');
+  }
+  actions.push('개선 실험은 한 가지 가설만 적용하고 기존 검증 명령으로 회귀를 확인하세요.');
+  return actions.slice(0, 3);
+}
+
+function enhanceResearchReport(report) {
+  if (!report || typeof report !== 'object') return report;
+  const results = Array.isArray(report.results) ? report.results.map(annotateResearchResult) : [];
+  const sources = Array.from(new Set((Array.isArray(report.sources) && report.sources.length
+    ? report.sources
+    : results.map((item) => item.url)).filter(Boolean)));
+  const quality = researchQualityCounts(results);
+  return {
+    ...report,
+    results,
+    sources,
+    count: results.length,
+    insights: {
+      sourceQuality: quality,
+      sourceTypes: Array.from(new Set(results.map((item) => item.sourceType).filter(Boolean))),
+      nextActions: researchNextActions({ ...report, results })
+    }
+  };
+}
+
 function mockXResearchResults(query) {
   return {
     ok: true,
@@ -2953,19 +3051,19 @@ async function runAutoResearch(query, options = {}) {
   let source = cleanText(options.source || '', 30).toLowerCase();
   if (!source) source = researchSourceFromText(cleanQuery);
   if (source === 'x' || source === 'twitter') {
-    return runXSubscriptionResearch(cleanQuery, options, options.config || getConfig());
+    return enhanceResearchReport(await runXSubscriptionResearch(cleanQuery, options, options.config || getConfig()));
   }
   if (source === 'threads' || source === 'thread') {
-    return runThreadsResearch(cleanQuery, options);
+    return enhanceResearchReport(await runThreadsResearch(cleanQuery, options));
   }
   if (source === 'instagram' || source === 'ig') {
-    return runInstagramResearch(cleanQuery, options);
+    return enhanceResearchReport(await runInstagramResearch(cleanQuery, options));
   }
   if (source === 'linkedin' || source === 'li') {
-    return runLinkedInResearch(cleanQuery, options);
+    return enhanceResearchReport(await runLinkedInResearch(cleanQuery, options));
   }
   if (source === 'youtube' || source === 'yt') {
-    return runYouTubeResearch(cleanQuery, options);
+    return enhanceResearchReport(await runYouTubeResearch(cleanQuery, options));
   }
   if (options.mock || /QA_AUTO_RESEARCH_(FIXTURE|EMPTY|ERROR)/i.test(cleanQuery)) {
     const mockMode = options.mock === 'empty' || /QA_AUTO_RESEARCH_EMPTY/i.test(cleanQuery)
@@ -2973,7 +3071,7 @@ async function runAutoResearch(query, options = {}) {
       : options.mock === 'error' || /QA_AUTO_RESEARCH_ERROR/i.test(cleanQuery)
         ? 'error'
         : 'ok';
-    return mockResearchResults(cleanQuery, mockMode);
+    return enhanceResearchReport(mockResearchResults(cleanQuery, mockMode));
   }
   const limit = Math.max(1, Math.min(Number(options.limit) || 4, 10));
   const fetchPages = options.fetchPages !== false;
@@ -2993,7 +3091,7 @@ async function runAutoResearch(query, options = {}) {
     report.status = 'error';
     report.error = error.message || String(error);
   }
-  return report;
+  return enhanceResearchReport(report);
 }
 
 function taskNeedsAutoResearch(task) {
@@ -5225,6 +5323,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  enhanceResearchReport,
   extractDuckDuckGoResults,
   isFetchSafeResearchUrl,
   isPrivateResearchHost,
@@ -5232,6 +5331,7 @@ module.exports = {
   normalizeResearchHostname,
   normalizeResearchUrl,
   researchSafeLookup,
+  researchSourceProfile,
   researchSourceFromAgent,
   researchSourceFromText,
   requestedResearchLimit,

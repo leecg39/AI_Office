@@ -352,8 +352,19 @@ async function createRunningAppDom(appOptions = {}) {
         results: [{
           title: 'QA Auto Research Fixture',
           url: 'https://example.com/connect-ai/qa-auto-research',
-          snippet: 'Dynamic UI research rendering fixture.'
-        }]
+          snippet: 'Dynamic UI research rendering fixture.',
+          sourceType: 'web',
+          sourceQuality: 'medium',
+          sourceReason: '일반 웹 출처'
+        }],
+        insights: {
+          sourceQuality: { high: 0, medium: 1, low: 0, unknown: 0 },
+          sourceTypes: ['web'],
+          nextActions: [
+            '공식 문서, 원문 저장소, 공공/교육 기관 출처를 추가로 찾아 핵심 주장을 교차 확인하세요.',
+            '개선 실험은 한 가지 가설만 적용하고 기존 검증 명령으로 회귀를 확인하세요.'
+          ]
+        }
       });
     }
     return mockResponse({ ok: false, error: `Unhandled QA fetch: ${url}` }, 404);
@@ -842,9 +853,13 @@ async function main() {
     assert(app.includes('function renderResearch(report)'), 'renderResearch function is missing');
     assert(app.includes('research-summary'), 'Research summary renderer is missing');
     assert(app.includes('research-result'), 'Research result card class is missing');
+    assert(app.includes('research-next-actions'), 'Research next action renderer is missing');
+    assert(app.includes('research-meta'), 'Research source quality renderer is missing');
     assert(app.includes('target="_blank" rel="noreferrer"'), 'Research links should open safely');
     assert(css.includes('.research-summary'), 'Research summary styles are missing');
     assert(css.includes('.research-result'), 'Research result styles are missing');
+    assert(css.includes('.research-next-actions'), 'Research next action styles are missing');
+    assert(css.includes('.research-meta'), 'Research source quality styles are missing');
   });
 
   await check('research button renders API results dynamically', async () => {
@@ -860,6 +875,9 @@ async function main() {
     assert(link.getAttribute('rel') === 'noreferrer', 'Research result link rel is not safe');
     assert(link.getAttribute('target') === '_blank', 'Research result link target is not _blank');
     assert(runtime.document.querySelector('#brainResults .research-summary').textContent.includes('Research complete'), 'Research summary did not render complete state');
+    assert(runtime.document.querySelector('#brainResults .research-next-actions').textContent.includes('다음 행동'), 'Research next actions did not render');
+    assert(runtime.document.querySelector('#brainResults .research-next-actions').textContent.includes('기존 검증 명령'), 'Research improvement guidance did not render');
+    assert(runtime.document.querySelector('#brainResults .research-meta').textContent.includes('medium'), 'Research source quality badge did not render');
     assert(runtime.calls.some((url) => url.startsWith('/api/research?q=QA_AUTO_RESEARCH_FIXTURE')), 'Research API was not called with the query');
   });
 

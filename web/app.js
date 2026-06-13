@@ -1664,6 +1664,14 @@ function renderBrain(files) {
 function renderResearch(report) {
   const box = $('brainResults');
   const items = report && Array.isArray(report.results) ? report.results : [];
+  const insights = report && report.insights && typeof report.insights === 'object' ? report.insights : {};
+  const nextActions = Array.isArray(insights.nextActions) ? insights.nextActions.filter(Boolean).slice(0, 3) : [];
+  const nextActionHtml = nextActions.length
+    ? `<div class="research-next-actions">
+        <strong>다음 행동</strong>
+        <ul>${nextActions.map((action) => `<li>${escapeHtml(action)}</li>`).join('')}</ul>
+      </div>`
+    : '';
   const summary = report
     ? `<div class="research-summary ${escapeHtml(report.status || '')}">
         <strong>${escapeHtml(report.status === 'ok' ? 'Research complete' : report.status === 'error' ? 'Research issue' : report.status === 'empty' ? 'Research empty' : 'Research')}</strong>
@@ -1672,16 +1680,21 @@ function renderResearch(report) {
     : '';
   if (items.length === 0) {
     const isError = report && report.status === 'error';
-    box.innerHTML = `${summary}<div class="empty">${escapeHtml(isError && report.error ? `리서치 실패 · ${report.error}` : '리서치 결과가 없습니다.')}</div>`;
+    box.innerHTML = `${summary}${nextActionHtml}<div class="empty">${escapeHtml(isError && report.error ? `리서치 실패 · ${report.error}` : '리서치 결과가 없습니다.')}</div>`;
     return;
   }
   box.innerHTML = summary + items.slice(0, 6).map((item) => `
     <article class="brain-result research-result" title="${escapeHtml(item.url)}">
       <strong>${escapeHtml(item.title || item.url)}</strong>
       <a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a>
+      <div class="research-meta">
+        ${item.sourceType ? `<span>${escapeHtml(item.sourceType)}</span>` : ''}
+        ${item.sourceQuality ? `<span>${escapeHtml(item.sourceQuality)}</span>` : ''}
+        ${item.sourceReason ? `<span>${escapeHtml(item.sourceReason)}</span>` : ''}
+      </div>
       <p>${escapeHtml(item.snippet || item.excerpt || '')}</p>
     </article>
-  `).join('');
+  `).join('') + nextActionHtml;
 }
 
 function renderAll() {

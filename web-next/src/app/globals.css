@@ -1630,6 +1630,49 @@ h2 { font-size: 18px; }
   background: rgba(255, 95, 109, 0.08);
 }
 
+.research-next-actions {
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(251, 191, 36, 0.055);
+  color: var(--text);
+}
+
+.research-next-actions strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #fbbf24;
+  font-size: 12px;
+}
+
+.research-next-actions ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.research-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.research-meta span {
+  display: inline-flex;
+  max-width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .brain-result strong,
 .brain-result span,
 .brain-result a {
