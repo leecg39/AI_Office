@@ -2087,13 +2087,26 @@ h2 { font-size: 18px; }
   gap: 10px;
 }
 
+.manager-dashboard-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.manager-dashboard-form.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .manager-edit-form .field {
   margin: 0;
 }
 
 .manager-edit-form input,
 .manager-edit-form select,
-.manager-edit-form textarea {
+.manager-edit-form textarea,
+.manager-dashboard-form input,
+.manager-dashboard-form select {
   width: 100%;
 }
 
@@ -2101,11 +2114,42 @@ h2 { font-size: 18px; }
   font-size: 11px;
 }
 
+.manager-agent-checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.manager-agent-check {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border: 1px solid rgba(53, 200, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(53, 200, 255, 0.07);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.manager-agent-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--cyan);
+}
+
 .manager-form-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+}
+
+.manager-dashboard-top-actions {
+  margin-top: 0;
+  margin-bottom: 10px;
 }
 
 .manager-form-actions.sticky-actions {
@@ -2467,6 +2511,9 @@ button.danger-outline {
   .api-action-row,
   .manager-hero,
   .manager-grid,
+  .manager-dashboard-form,
+  .manager-dashboard-form.three,
+  .manager-agent-checks,
   .manager-skill-grid,
   .manager-run {
     grid-template-columns: 1fr;

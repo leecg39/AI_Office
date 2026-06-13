@@ -169,101 +169,101 @@ const AGENTS = [
   {
     id: 'ceo',
     name: 'Anna',
-    role: 'Chief Executive Agent',
+    role: '마케팅 팀장 · 총괄 오케스트레이터',
     emoji: '🧭',
     accent: '#f8fafc',
     avatar: resolveAgentImage('anna_ceo.jpeg'),
-    specialty: '대표 의사결정, 작업 분해, 전문가 팬아웃, 승인 게이트, 근거 기반 종합 판단',
-    tagline: '회사 전체 의사결정과 작업 분배를 맡습니다'
+    specialty: '전문 에이전트 라우팅, 요구사항 분해, 승인 게이트, 결과 취합, 리스크 기반 우선순위',
+    tagline: '사업, 카피, SEO, 마케팅, 법무, 고객응대, 영업 에이전트를 배정합니다'
   },
   {
     id: 'youtube',
     name: '레오',
-    role: 'Head of YouTube',
-    emoji: '📺',
+    role: 'SEO Consultant · SEO 전문가',
+    emoji: '🔎',
     accent: '#ff4444',
-    specialty: '경쟁 채널 분석, 영상 기획, 유지율 전략, 트렌드 분석, 썸네일 브리프',
-    tagline: '채널 운영과 콘텐츠 전략을 담당합니다',
+    specialty: '키워드 리서치, 콘텐츠 구조, 온페이지 SEO, 테크니컬 SEO, 로컬 SEO, 검색 노출 개선',
+    tagline: '키워드와 콘텐츠 구조를 개선해 검색 노출을 높입니다',
     avatar: resolveAgentImage('leo_profile.png')
   },
   {
     id: 'instagram',
     name: 'Instagram',
-    role: 'Head of Instagram',
+    role: 'SNS 캡션 에이전트 · SNS 카피라이터',
     emoji: '📷',
     accent: '#e1306c',
-    specialty: '릴스/피드 콘셉트, 타깃 반응 신호, 브랜드 포지셔닝, 캡션, 해시태그 전략',
-    tagline: '인스타 콘텐츠 기획과 인게이지먼트를 끌어올립니다',
+    specialty: 'Instagram 훅, 해시태그, LinkedIn 카피, X 280자 카피, Threads 글타래',
+    tagline: '채널별 짧은 카피와 SNS 반응 포인트를 만듭니다',
     avatar: ''
   },
   {
     id: 'developer',
     name: '코다리',
-    role: '시니어 풀스택 엔지니어',
+    role: '기술 검증 에이전트 · 구현 담당',
     emoji: '💻',
     accent: '#22d3ee',
-    specialty: '코드 작성, API/OAuth 통합, 로컬 서버 운영, 테스트와 브라우저 검증',
-    tagline: '읽고, 짜고, 검증하는 개발 담당입니다',
+    specialty: '기술 타당성 검증, 코드 수정, API/OAuth 통합, 로컬 서버 운영, 자동화, 테스트와 화면 확인',
+    tagline: 'Annatar 운영에 필요한 구현과 기술 검증을 맡습니다',
     avatar: resolveAgentImage('codari.png')
   },
   {
     id: 'business',
     name: '현빈',
-    role: '비즈니스 전략가',
+    role: 'Business Advisor · 사업 전략가',
     emoji: '💼',
     accent: '#f5c518',
-    specialty: '수익화, 가격 전략, 시장·재무·계약·규제 리스크 분석',
-    tagline: '비즈니스 판단과 KPI를 같이 봅니다',
+    specialty: '사업 전략, 포지셔닝, 가격, 목표, 성장 판단, 브랜드와 비즈니스 의사결정',
+    tagline: '사업 전략과 성장 판단을 현실적인 실행안으로 정리합니다',
     avatar: resolveAgentImage('hyunbin.jpeg')
   },
   {
     id: 'secretary',
     name: '영숙',
-    role: '비서 · Personal Assistant',
-    emoji: '📱',
+    role: 'Legal Advisor · 법무 보조',
+    emoji: '⚖️',
     accent: '#84cc16',
-    specialty: '작업 큐, 데일리 브리핑, 승인 요청, 일정·알림, 팀 상태 요약',
-    tagline: '오늘 해야 할 일을 정리하고 챙깁니다',
+    specialty: '정책, 약관, 계약서, 컴플라이언스, 권리 보호, 전자상거래 정책',
+    tagline: '정책, 약관, 계약서 초안을 리스크 중심으로 점검합니다',
     avatar: resolveAgentImage('youngsook_secretary.jpeg')
   },
   {
     id: 'editor',
     name: '루나',
-    role: 'Sound Director & Composer',
-    emoji: '🎵',
+    role: 'Customer Comms · 커뮤니케이션 전문가',
+    emoji: '💬',
     accent: '#f472b6',
-    specialty: 'BGM 생성 브리프, 사운드 디자인, 영상-음악 합성, 오디오 후처리',
-    tagline: '영상에 맞는 사운드 감각을 더합니다',
+    specialty: '고객 이메일, 보도자료, 사과문, 리뷰 대응, 클레임 처리, 외부 커뮤니케이션',
+    tagline: '고객과 외부 이해관계자 메시지를 차분하게 정리합니다',
     avatar: resolveAgentImage('luna_greeting_pixar.png')
   },
   {
     id: 'designer',
     name: '옥순',
-    role: 'Lead Designer',
-    emoji: '🎨',
+    role: 'Marketing Planner · 마케팅 전략가',
+    emoji: '📣',
     accent: '#a78bfa',
-    specialty: '브랜드 시스템, 화면 품질 점검, 디자인 브리프, 썸네일 컨셉 3안',
-    tagline: '시각 자산과 화면 품질을 담당합니다',
+    specialty: '캠페인 전략, SNS, 이메일, 광고, 프로모션, 성장 실험, 콘텐츠 캘린더',
+    tagline: '캠페인과 광고, SNS, 이메일 실행 계획을 설계합니다',
     avatar: resolveAgentImage('oksun_designer.webp')
   },
   {
     id: 'writer',
     name: 'Jenny',
-    role: 'Copywriter',
+    role: 'Creative Writer · 콘텐츠/카피라이터',
     emoji: '✍️',
     accent: '#fbbf24',
-    specialty: '광고 카피, 영상 스크립트, 인스타 캡션, 블로그 초안, 후크 변형안',
-    tagline: '글과 메시지를 선명하게 만듭니다',
+    specialty: '블로그, 웹사이트 카피, 상품 설명, 브랜드 톤, 랜딩 페이지, 소셜 캡션',
+    tagline: '브랜드 톤에 맞는 블로그와 웹사이트 카피를 작성합니다',
     avatar: resolveAgentImage('jenny_writer.webp')
   },
   {
     id: 'researcher',
     name: '정후',
-    role: 'Trend & Data Researcher',
-    emoji: '🔍',
+    role: 'Sales & Outreach · 세일즈 전문가',
+    emoji: '🤝',
     accent: '#60a5fa',
-    specialty: '실시간 웹 리서치, 경쟁 분석, 사실 확인, 링크 정규화, 출처 품질 관리',
-    tagline: '근거와 자료를 찾아 정리합니다',
+    specialty: '콜드아웃리치, 제안서, 견적, 영업 대화, 클로징, 리텐션',
+    tagline: '아웃리치부터 제안, 견적, 클로징까지 영업 문구를 만듭니다',
     avatar: resolveAgentImage('junghu_researcher.webp')
   }
 ];
@@ -275,7 +275,7 @@ const CONNECT_AI_OPERATING_POLICY = [
   '- 링크는 접근 가능한 원본 URL만 남기고, 접근이 막히면 대체 출처와 실패 사유를 함께 보고합니다.',
   '- 파일 삭제, 외부 배포, 결제, 대량 전송, API 키 또는 OAuth 변경은 승인 후 실행합니다.',
   '- 작업은 완료, 실패, 막힘, 취소 중 하나로 끝까지 닫고 중간 진행률에서 방치하지 않습니다.',
-  '- 영상/전사/브리프를 다채널 콘텐츠로 바꿀 때는 OSMU 흐름과 QA 판정을 포함합니다.'
+  '- 사업, 카피, SEO, 마케팅, 법무, 고객응대, 영업 요청은 해당 전문 에이전트와 승인 필요 여부를 함께 표시합니다.'
 ].join('\n');
 
 const PAPERCLIP_AGENT_MANAGEMENT_SOURCE = {
@@ -299,146 +299,348 @@ const AGENT_MANAGER_TABS = [
   { id: 'budget', label: '예산' }
 ];
 
+const AGENT_SKILL_LIBRARY = {
+  business: [
+    'Validate my business idea',
+    'Define my value proposition',
+    'Review my pricing',
+    'Set quarterly goals',
+    'One-page business plan',
+    'Build a customer persona',
+    'Craft an elevator pitch',
+    'Brainstorm business names',
+    'Define my brand voice',
+    'Pick a color palette',
+    'Design a logo',
+    'Analyze my competitors',
+    'Weekly priorities',
+    'Quick wins audit',
+    'Get your first 100 customers',
+    'Growth experiments',
+    'Side hustle to business',
+    'Raise your prices',
+    'Build recurring revenue',
+    'SWOT analysis',
+    'Lean canvas',
+    'Pareto analysis (80/20)',
+    'Set SMART goals',
+    'Find your niche',
+    'Eisenhower matrix',
+    'MVP thinking',
+    'Five whys',
+    'Pricing psychology',
+    'Should I hire?',
+    'Go or no-go',
+    'Pivot or persist',
+    'Time management',
+    'Automate the boring stuff',
+    'Solopreneur systems',
+    'Break-even calculator',
+    'Understand profit margins',
+    'Simple financial forecast',
+    'Image generator',
+    'Content generator',
+    'Background remover',
+    'Image upscaler',
+    'AI heatmap'
+  ],
+  writer: [
+    'Write a blog post',
+    'Write a newsletter',
+    'Write a case study',
+    'Write a listicle',
+    'Generate content ideas',
+    'Write a how-to guide',
+    'Write website copy',
+    'Write product description',
+    'Write an About page',
+    'Write an FAQ page',
+    'Write a landing page',
+    'Write a pricing page',
+    'Write a Google Business Profile',
+    'Write a product listing',
+    'Write a comparison page',
+    'Write a lead magnet',
+    'Write a thank-you page',
+    'Write a social media bio',
+    'Write social captions',
+    'Write a tagline or slogan',
+    'Write a video script',
+    'Write a brand story',
+    'Write a job posting',
+    'Write a course outline',
+    'Write podcast show notes',
+    'Rewrite and improve',
+    'Change the tone',
+    'Make it shorter',
+    'Write in my voice',
+    'Humanize AI text'
+  ],
+  youtube: [
+    'Keyword research',
+    'Content gap analysis',
+    'Competitor SEO analysis',
+    "Find what I'm ranking for",
+    'What are people searching?',
+    'SEO audit',
+    'Optimize meta tags',
+    'Optimize image alt text',
+    'Internal linking strategy',
+    'Review my page',
+    'Write SEO headings',
+    'Optimize for featured snippet',
+    'Fix my title tags',
+    'Turn a blog post into traffic',
+    'Local SEO optimization',
+    'Google Business Profile audit',
+    'Get more Google reviews',
+    'SEO content brief',
+    'Pillar page strategy',
+    'SEO blog calendar',
+    'Backlink strategy',
+    'Plan site structure',
+    'Page speed advice'
+  ],
+  designer: [
+    'Campaign strategy',
+    'Product launch plan',
+    'Social media content',
+    'Email campaign',
+    'Content calendar',
+    'Newsletter strategy',
+    'Instagram strategy',
+    'TikTok strategy',
+    'Social media audit',
+    'First 1,000 followers',
+    'Hashtag strategy',
+    'Grow my email list',
+    'Welcome email sequence',
+    'Abandoned cart emails',
+    'Write ad copy',
+    'Landing page strategy',
+    'Facebook ads plan',
+    'Google Ads plan',
+    'First ad campaign',
+    'Plan a sale',
+    'Giveaway or contest',
+    'Coupon strategy',
+    'Referral program',
+    'Influencer outreach plan',
+    'Brand awareness plan'
+  ],
+  secretary: [
+    'Privacy policy',
+    'Terms of service',
+    'Refund policy',
+    'Cookie policy',
+    'Disclaimer page',
+    'Acceptable use policy',
+    'Contract review',
+    'Freelance contract',
+    'NDA draft',
+    'Licensing agreement',
+    'Client service agreement',
+    'Partnership agreement',
+    'Business structure advice',
+    'Trademark basics',
+    'Copyright basics',
+    'Shipping policy',
+    'Subscription terms',
+    'GDPR compliance check',
+    'Accessibility compliance',
+    'Email marketing compliance',
+    'Affiliate disclosure',
+    'Sales tax basics',
+    'Cease and desist letter',
+    'Handle a chargeback'
+  ],
+  editor: [
+    'Professional email',
+    'Press release',
+    'Crisis communication',
+    'Partnership outreach',
+    'Media pitch',
+    'Event invitation',
+    'Negotiate with a vendor',
+    'Meeting follow-up',
+    'Write a customer apology',
+    'Ask for a testimonial',
+    'Ask for feedback',
+    'Customer onboarding email',
+    'Respond to a bad review',
+    'Post-purchase follow-up',
+    'Re-engage inactive customers',
+    'Write a thank-you note',
+    'Decline a request',
+    'Chase a late payment',
+    'Fire a client',
+    'Respond to a complaint',
+    'Auto-reply templates',
+    'Out-of-office message'
+  ],
+  researcher: [
+    'Sales outreach',
+    'Follow-up sequence',
+    'Cold call script',
+    'LinkedIn outreach',
+    'Ask for a referral',
+    'DM outreach',
+    'Networking introduction',
+    'Sales proposal',
+    'Objection handling',
+    'Write a quote',
+    'Freelance rate card',
+    'Discovery call script',
+    'Handle price shoppers',
+    'Is this lead worth it?',
+    'Deal closing email',
+    'Proposal follow-up',
+    'Pricing negotiation',
+    'Win back a cold lead',
+    'Upsell an existing customer'
+  ]
+};
+
 const AGENT_MANAGEMENT_PROFILES = {
   ceo: {
     reportsTo: '',
-    adapterType: 'connect_ai_orchestrator',
-    modelProfile: 'strategic-default',
+    adapterType: 'connect_ai_annatar_orchestrator',
+    modelProfile: 'connect-ai-business-orchestrator',
     temperature: 0.3,
     monthlyBudgetCents: 50000,
     instructions: [
-      '대표와 총괄 디렉터 역할을 합쳐 전체 요청을 사업 목표, 리스크, 필요한 전문가 순서로 분해합니다.',
-      '법무, 재무, 기술, 시장 근거가 부족하면 최종 결론을 확정하지 않습니다.',
-      '되돌리기 어려운 액션은 승인 게이트로 보냅니다.'
+      '사용자 요청을 사업, 카피, SEO, 마케팅, 법무, 고객 커뮤니케이션, 영업 영역으로 분해합니다.',
+      '필요한 전문 에이전트만 최소 인원으로 배정하고 각 결과의 승인 필요 항목을 확인합니다.',
+      '삭제, 외부 발송, 결제, 법률/재무 최종 판단, API/OAuth 변경은 사용자 승인 게이트로 보냅니다.'
     ],
-    skills: ['작업 분해', '승인 게이트 판단', '우선순위 결정', '전문가 결과 종합', '중단/시작 판단'],
-    handoffTargets: ['business', 'developer', 'researcher', 'secretary']
+    skills: ['전문가 라우팅', '업무 범위 분해', '승인 게이트 판단', '리스크 기반 우선순위', '결과 취합'],
+    handoffTargets: ['business', 'writer', 'youtube', 'designer', 'secretary', 'editor', 'researcher']
   },
   youtube: {
     reportsTo: 'ceo',
-    adapterType: 'connect_ai_content_strategy',
-    modelProfile: 'content-strategy',
-    temperature: 0.55,
+    adapterType: 'connect_ai_seo_consultant',
+    modelProfile: 'connect-ai-seo-consultant',
+    temperature: 0.4,
     monthlyBudgetCents: 30000,
     instructions: [
-      '경쟁 채널, 시청자 반응, 포지셔닝 분석을 영상 전략으로 변환합니다.',
-      '조회수보다 유지율, 반복 시청 가능성, 제목/썸네일 검증 가능성을 우선합니다.',
-      '리서치 없는 트렌드 주장은 하지 않습니다.'
+      '키워드, 검색 의도, 콘텐츠 구조, 온페이지/테크니컬/로컬 SEO를 점검합니다.',
+      '제목 태그, 메타 설명, 헤딩, 내부 링크, 이미지 alt, 사이트 구조 개선안을 우선순위로 제시합니다.',
+      '검색량, 순위, 트래픽 전망은 확정값으로 쓰지 말고 입력 URL, 추정, 확인 필요 데이터를 구분합니다.'
     ],
-    skills: ['채널 경쟁 분석', '영상 기획서', '제목/후크 검증', '썸네일 브리프', '업로드 메타데이터'],
-    handoffTargets: ['researcher', 'writer', 'designer']
+    skills: AGENT_SKILL_LIBRARY.youtube,
+    handoffTargets: ['writer', 'designer', 'developer', 'business']
   },
   instagram: {
-    reportsTo: 'ceo',
-    adapterType: 'connect_ai_social_content',
-    modelProfile: 'social-content',
+    reportsTo: 'youtube',
+    adapterType: 'connect_ai_sns_copywriter',
+    modelProfile: 'annatar-sns-copy',
     temperature: 0.65,
     monthlyBudgetCents: 24000,
     instructions: [
-      '타깃 고객, 반응 신호, 브랜드 포지셔닝을 릴스/피드 전략으로 변환합니다.',
-      '캡션, 해시태그, 게시 시간은 근거 또는 실험 가설로 표시합니다.',
-      '외부 게시 전 사용자 승인을 요구합니다.'
+      'Instagram, LinkedIn, X, Threads 등 채널별 짧은 카피를 작성합니다.',
+      'Instagram 훅과 해시태그, X 280자 카피, Threads 글타래를 채널 특성에 맞게 분리합니다.',
+      '외부 게시 전 승인 필요 여부와 광고/표현 리스크를 표시합니다.'
     ],
-    skills: ['릴스 콘셉트', '피드 기획', '해시태그 전략', '스토리 흐름', '반응 지표 해석'],
-    handoffTargets: ['researcher', 'writer', 'designer']
+    skills: ['Instagram 훅', '해시태그 전략', 'LinkedIn 카피', 'X 280자 카피', 'Threads 글타래'],
+    handoffTargets: ['youtube', 'writer', 'designer']
   },
   developer: {
-    reportsTo: 'ceo',
+    reportsTo: 'business',
     adapterType: 'codex_local',
-    modelProfile: 'engineering',
+    modelProfile: 'annatar-technical-validation',
     temperature: 0.15,
     monthlyBudgetCents: 65000,
     instructions: [
-      '구현 전 관련 파일을 읽고, 변경 후 테스트 또는 실제 UI 확인으로 검증합니다.',
-      'API, 프록시, OAuth, 로컬 서버는 설정값과 실패 메시지를 분리해서 보고합니다.',
+      'Annatar 운영에 필요한 파일, 설정, API, OAuth, 서버, 자동화 구현 가능성을 검증합니다.',
+      '구현 전 관련 파일을 읽고 변경 후 테스트 또는 실제 UI 확인으로 닫습니다.',
       '비밀키와 토큰은 출력하지 않습니다.'
     ],
-    skills: ['코드 작성/수정', '로컬 서버 운영', 'API 통합', 'OAuth 프록시 검증', '테스트와 브라우저 확인'],
-    handoffTargets: ['ceo', 'researcher', 'secretary']
+    skills: ['기술 타당성 검증', '코드 작성/수정', 'API/OAuth 통합', '로컬 서버 운영', '테스트와 화면 확인'],
+    handoffTargets: ['business', 'ceo', 'secretary']
   },
   business: {
     reportsTo: 'ceo',
-    adapterType: 'connect_ai_business_analysis',
-    modelProfile: 'business-analysis',
+    adapterType: 'connect_ai_business_advisor',
+    modelProfile: 'connect-ai-business-advisor',
     temperature: 0.35,
     monthlyBudgetCents: 42000,
     instructions: [
-      '시장조사, 재무담당, 법률자문 역할을 비즈니스 판단 프레임으로 통합합니다.',
-      '수익화, 가격, 시장, 계약, 규제 이슈를 하나의 의사결정 메모로 정리합니다.',
-      '법률 결론은 확정 표현 대신 리스크와 확인 필요 항목으로 표시합니다.'
+      '사업 아이디어, 가치 제안, 포지셔닝, 가격, 목표, 성장 판단을 실행 가능한 선택지로 정리합니다.',
+      '비용, 마진, 손익분기, 고객 세그먼트, MVP, 성장 실험의 가정과 리스크를 분리합니다.',
+      '법률/세무/투자 판단은 확정 결론 대신 확인 필요 항목과 전문가 검토 필요 여부를 표시합니다.'
     ],
-    skills: ['수익 모델', '가격 전략', '시장/경쟁 분석', 'ROI/KPI 설계', '계약/규제 리스크 체크리스트'],
-    handoffTargets: ['researcher', 'ceo', 'secretary']
+    skills: AGENT_SKILL_LIBRARY.business,
+    handoffTargets: ['designer', 'writer', 'researcher', 'secretary', 'developer', 'ceo']
   },
   secretary: {
     reportsTo: 'ceo',
-    adapterType: 'connect_ai_operations',
-    modelProfile: 'operations',
-    temperature: 0.2,
+    adapterType: 'connect_ai_legal_advisor',
+    modelProfile: 'connect-ai-legal-advisor',
+    temperature: 0.25,
     monthlyBudgetCents: 18000,
     instructions: [
-      '각 작업의 상태, 담당자, 다음 행동, 승인 필요 여부를 짧게 관리합니다.',
-      '일정/알림/보고는 사용자에게 바로 보낼 수 있는 문장으로 정리합니다.',
-      '완료, 막힘, 승인 필요 항목을 놓치지 않고 닫습니다.'
+      '정책, 약관, 계약서, 컴플라이언스, 권리 보호 문서의 초안과 검토 메모를 작성합니다.',
+      '개인정보, 환불, 쿠키, 구독, 이메일 마케팅, 접근성, 세금 등 규정 이슈는 관할과 사실관계를 먼저 확인합니다.',
+      '법률 자문을 대체하지 않으며 리스크, 협상 포인트, 변호사 확인 필요 항목을 명확히 표시합니다.'
     ],
-    skills: ['작업 큐 정리', '데일리 브리핑', '승인 요청 정리', '일정/알림', '팀 상태 요약'],
-    handoffTargets: ['ceo', 'business', 'developer']
+    skills: AGENT_SKILL_LIBRARY.secretary,
+    handoffTargets: ['business', 'writer', 'editor', 'ceo']
   },
   editor: {
     reportsTo: 'ceo',
-    adapterType: 'connect_ai_audio_creative',
-    modelProfile: 'audio-creative',
-    temperature: 0.65,
+    adapterType: 'connect_ai_customer_comms',
+    modelProfile: 'connect-ai-customer-comms',
+    temperature: 0.55,
     monthlyBudgetCents: 24000,
     instructions: [
-      'BGM 제안은 장르, BPM, 길이, 분위기, 사용 장면을 함께 제시합니다.',
-      '영상에 합성하거나 외부 공개하기 전에는 승인 단계를 둡니다.',
-      '사운드 산출물도 목적, 제약, 성공 기준을 함께 남깁니다.'
+      '고객, 파트너, 언론, 공급업체 등 외부 이해관계자에게 보낼 메시지를 작성합니다.',
+      '사과문, 리뷰/클레임 대응, 위기 커뮤니케이션은 공감, 책임, 사실 확인, 다음 조치를 균형 있게 담습니다.',
+      '외부 발송 전 승인 필요 여부와 법무 검토가 필요한 표현을 표시합니다.'
     ],
-    skills: ['BGM 생성 브리프', '사운드 디자인', '영상-음악 합성', '자막/타이틀 동기화', '오디오 후처리'],
-    handoffTargets: ['youtube', 'writer', 'designer']
+    skills: AGENT_SKILL_LIBRARY.editor,
+    handoffTargets: ['secretary', 'writer', 'business', 'ceo']
   },
   designer: {
     reportsTo: 'ceo',
-    adapterType: 'connect_ai_visual_creative',
-    modelProfile: 'visual-creative',
-    temperature: 0.7,
+    adapterType: 'connect_ai_marketing_planner',
+    modelProfile: 'connect-ai-marketing-planner',
+    temperature: 0.55,
     monthlyBudgetCents: 32000,
     instructions: [
-      '브랜드, 화면, 썸네일은 사용 목적, 타깃, 제약, 성공 기준으로 설명합니다.',
-      '디자인 결정은 색, 타이포, 레이아웃, 레퍼런스, 금지 요소까지 함께 남깁니다.',
-      '외부 공개 전 자산 사용권과 텍스트 가독성을 확인합니다.'
+      '제품과 목표를 캠페인, SNS, 이메일, 광고, 프로모션, 성장 실험으로 나눠 계획합니다.',
+      '각 계획에는 대상, 채널, 일정, KPI, 예산 가정, 필요한 카피/크리에이티브 산출물을 포함합니다.',
+      '광고 집행, 대량 발송, 할인 정책 변경은 승인 필요 항목으로 표시합니다.'
     ],
-    skills: ['브랜드 시스템', '썸네일 3안', '화면 품질 점검', '디자인 브리프', '시각 레퍼런스 매칭'],
-    handoffTargets: ['writer', 'youtube', 'instagram']
+    skills: AGENT_SKILL_LIBRARY.designer,
+    handoffTargets: ['writer', 'instagram', 'youtube', 'business', 'editor']
   },
   writer: {
-    reportsTo: 'ceo',
-    adapterType: 'connect_ai_copywriting',
-    modelProfile: 'copywriting',
+    reportsTo: 'designer',
+    adapterType: 'connect_ai_creative_writer',
+    modelProfile: 'connect-ai-creative-writer',
     temperature: 0.75,
     monthlyBudgetCents: 26000,
     instructions: [
-      '결과물은 목적, 타깃, 톤, 변형안, 사용 위치를 분명히 나눕니다.',
-      '사실 기반 문구와 감성 문구를 구분합니다.',
-      '외부 전송 전 고객 확인 또는 승인 필요 여부를 표시합니다.'
+      '블로그, 웹사이트 카피, 상품 설명, 랜딩 페이지, 브랜드 스토리, 소셜 문구를 작성합니다.',
+      '독자, 목적, 브랜드 톤, CTA, 핵심 메시지를 먼저 정리하고 초안을 구조화합니다.',
+      '사실 기반 문구, 감성/설득 문구, 확인이 필요한 주장, 외부 게시 승인 필요 여부를 구분합니다.'
     ],
-    skills: ['광고 카피', '영상 스크립트', '인스타 캡션', '블로그 초안', '후크 변형안'],
-    handoffTargets: ['youtube', 'instagram', 'designer']
+    skills: AGENT_SKILL_LIBRARY.writer,
+    handoffTargets: ['youtube', 'designer', 'instagram', 'editor']
   },
   researcher: {
-    reportsTo: 'ceo',
-    adapterType: 'connect_ai_research',
-    modelProfile: 'research',
-    temperature: 0.2,
+    reportsTo: 'business',
+    adapterType: 'connect_ai_sales_outreach',
+    modelProfile: 'connect-ai-sales-outreach',
+    temperature: 0.55,
     monthlyBudgetCents: 38000,
     instructions: [
-      '오늘 날짜, 최신 뉴스, 가격, 규정, 모델 정보처럼 변할 수 있는 내용은 반드시 실시간 확인합니다.',
-      '링크는 접근 가능한 원문 URL만 남기고, 깨진 Markdown 링크는 정리합니다.',
-      '출처 접근이 막히면 대체 출처와 원문 접근 실패 사유를 함께 보고합니다.'
+      '콜드아웃리치, 팔로업, 콜 스크립트, LinkedIn/DM 메시지, 제안서, 견적, 클로징 문구를 작성합니다.',
+      '리드 적합도, 의사결정자, 제안 가치, 반대 의견, 다음 액션을 분리해 영업 흐름을 설계합니다.',
+      '과장, 압박, 스팸성 표현은 피하고 가격 협상과 제안 범위는 확인 필요 항목으로 표시합니다.'
     ],
-    skills: ['실시간 웹 리서치', '경쟁사 분석', '자료 출처 정리', '사실 확인', '링크 정규화'],
-    handoffTargets: ['business', 'writer', 'ceo']
+    skills: AGENT_SKILL_LIBRARY.researcher,
+    handoffTargets: ['business', 'writer', 'editor', 'ceo']
   }
 };
 
@@ -1163,6 +1365,16 @@ function cleanAgentManagementPatch(value) {
     if (skills) patch.skills = skills;
   }
 
+  if (input.org && typeof input.org === 'object') {
+    patch.org = {};
+    if (input.org.reportsToId !== undefined) {
+      patch.org.reportsToId = cleanText(input.org.reportsToId, 80);
+    }
+    if (input.org.directReportIds !== undefined) {
+      patch.org.directReportIds = cleanStringList(input.org.directReportIds, 30, 80);
+    }
+  }
+
   if (input.settings && typeof input.settings === 'object') {
     patch.settings = {};
     if (input.settings.identity) {
@@ -1213,7 +1425,7 @@ function mergeAgentManagementPatch(current, incoming) {
   const base = cleanAgentManagementPatch(current);
   const patch = cleanAgentManagementPatch(incoming);
   const merged = { ...base };
-  ['instructions', 'budget'].forEach((section) => {
+  ['instructions', 'budget', 'org'].forEach((section) => {
     if (!patch[section]) return;
     merged[section] = {
       ...(merged[section] || {}),
@@ -4054,6 +4266,10 @@ function applyAgentManagementOverrides(management, rawOverrides) {
     budget: {
       ...(management.budget || {}),
       ...(overrides.budget || {})
+    },
+    org: {
+      ...(management.org || {}),
+      ...(overrides.org || {})
     }
   };
   if (overrides.settings && overrides.settings.handoffTargets !== undefined) {
@@ -4088,6 +4304,7 @@ function applyAgentManagementOverrides(management, rawOverrides) {
 }
 
 function buildAgentManagement(agent, config, tasks, approvals, sessions, events, agents, overrides = {}) {
+  const cleanedOverrides = cleanAgentManagementPatch(overrides);
   const profile = AGENT_MANAGEMENT_PROFILES[agent.id] || {};
   const agentTasks = tasks.filter((task) => agentRecordMatches(task, agent.id));
   const agentApprovals = approvals.filter((approval) => agentRecordMatches(approval, agent.id));
@@ -4109,10 +4326,18 @@ function buildAgentManagement(agent, config, tasks, approvals, sessions, events,
   }));
   const spentMonthlyCents = Math.min(monthlyBudgetCents, runHistory.reduce((sum, run) => sum + run.costCents, 0));
   const budgetPercent = monthlyBudgetCents > 0 ? Math.round((spentMonthlyCents / monthlyBudgetCents) * 100) : 0;
-  const reportsToAgent = agents.find((item) => item.id === profile.reportsTo) || null;
-  const directReports = agents
-    .filter((item) => (AGENT_MANAGEMENT_PROFILES[item.id] || {}).reportsTo === agent.id)
-    .map((item) => ({ id: item.id, name: item.name, role: item.role }));
+  const orgOverride = cleanedOverrides.org || {};
+  const reportsToId = orgOverride.reportsToId !== undefined ? orgOverride.reportsToId : (profile.reportsTo || '');
+  const reportsToAgent = reportsToId ? agents.find((item) => item.id === reportsToId) || null : null;
+  const directReports = Array.isArray(orgOverride.directReportIds)
+    ? orgOverride.directReportIds
+      .map((id) => agents.find((item) => item.id === id && item.id !== agent.id))
+      .filter(Boolean)
+      .map((item) => ({ id: item.id, name: item.name, role: item.role }))
+    : agents
+      .filter((item) => (AGENT_MANAGEMENT_PROFILES[item.id] || {}).reportsTo === agent.id)
+      .map((item) => ({ id: item.id, name: item.name, role: item.role }));
+  const importedSkillNames = new Set(Array.isArray(profile.skills) ? profile.skills : []);
 
   const baseManagement = {
     tabs: AGENT_MANAGER_TABS,
@@ -4130,7 +4355,9 @@ function buildAgentManagement(agent, config, tasks, approvals, sessions, events,
     },
     org: {
       reportsTo: reportsToAgent ? { id: reportsToAgent.id, name: reportsToAgent.name, role: reportsToAgent.role } : null,
-      directReports
+      reportsToId: reportsToAgent ? reportsToAgent.id : '',
+      directReports,
+      directReportIds: directReports.map((item) => item.id)
     },
     instructions: {
       primary: Array.isArray(profile.instructions) ? profile.instructions : [],
@@ -4139,7 +4366,7 @@ function buildAgentManagement(agent, config, tasks, approvals, sessions, events,
     skills: managementSkillList(agent, profile).map((name) => ({
       name,
       status: 'enabled',
-      source: name === 'Second Brain' || name === '승인 게이트' ? 'Connect AI' : 'Paperclip import'
+      source: importedSkillNames.has(name) ? 'Paperclip import' : 'Connect AI'
     })),
     settings: {
       identity: {
@@ -4179,7 +4406,7 @@ function buildAgentManagement(agent, config, tasks, approvals, sessions, events,
       policy: '80% 소프트 알림, 100% 하드 스톱'
     }
   };
-  return applyAgentManagementOverrides(baseManagement, overrides);
+  return applyAgentManagementOverrides(baseManagement, cleanedOverrides);
 }
 
 function recoverStaleRunningTasks(state, config) {

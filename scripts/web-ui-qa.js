@@ -83,7 +83,7 @@ function agentManagementFixture(agentId, name) {
     },
     org: {
       reportsTo: agentId === 'ceo' ? null : { id: 'ceo', name: 'Anna', role: 'CEO' },
-      directReports: agentId === 'ceo' ? [{ id: 'writer', name: 'Jenny', role: 'Copywriter' }] : []
+      directReports: agentId === 'ceo' ? [{ id: 'writer', name: 'Jenny', role: 'Creative Writer · 콘텐츠/카피라이터' }] : []
     },
     instructions: {
       primary: [`${name} QA instruction`],
@@ -149,8 +149,8 @@ async function createRunningAppDom(appOptions = {}) {
         config: { ...configFixture },
         brain: { fileCount: 1, capped: false },
         agents: [
-          { id: 'ceo', name: 'Anna', role: 'CEO', avatar: '', active: true, openTasks: 0, management: agentManagementFixture('ceo', 'Anna') },
-          { id: 'writer', name: 'Jenny', role: 'Copywriter', avatar: '', active: true, openTasks: 0, goal: '', management: agentManagementFixture('writer', 'Jenny') }
+          { id: 'ceo', name: 'Anna', role: '마케팅 팀장 · 총괄 오케스트레이터', avatar: '', active: true, openTasks: 0, management: agentManagementFixture('ceo', 'Anna') },
+          { id: 'writer', name: 'Jenny', role: 'Creative Writer · 콘텐츠/카피라이터', avatar: '', active: true, openTasks: 0, goal: '', management: agentManagementFixture('writer', 'Jenny') }
         ],
         tasks: { open: 0, all: [] },
         approvals: { pending: 0, all: [] },
@@ -402,8 +402,8 @@ async function createRunningCompletedDom() {
       return mockResponse({
         ok: true,
         agents: [
-          { id: 'writer', name: 'Jenny', role: 'Copywriter', avatar: '', accent: '#fbbf24' },
-          { id: 'ceo', name: 'Anna', role: 'CEO', avatar: '', accent: '#f8fafc' }
+          { id: 'writer', name: 'Jenny', role: 'Creative Writer · 콘텐츠/카피라이터', avatar: '', accent: '#fbbf24' },
+          { id: 'ceo', name: 'Anna', role: '마케팅 팀장 · 총괄 오케스트레이터', avatar: '', accent: '#f8fafc' }
         ]
       });
     }
@@ -574,6 +574,28 @@ async function main() {
     assert(runtime.document.body.textContent.includes('설정'), 'Agent settings tab is missing');
     assert(runtime.document.body.textContent.includes('실행기록'), 'Agent runs tab is missing');
     assert(runtime.document.body.textContent.includes('예산'), 'Agent budget tab is missing');
+    runtime.document.querySelector('#agentDashboardStatus').value = 'paused';
+    runtime.document.querySelector('#agentDashboardHeartbeatInterval').value = '120';
+    runtime.document.querySelector('#agentDashboardMonthlyBudget').value = '123.45';
+    runtime.document.querySelector('#agentDashboardAdapterType').value = 'qa_adapter';
+    runtime.document.querySelector('#agentDashboardModel').value = 'local:dashboard-save-model';
+    runtime.document.querySelector('#agentDashboardModelProfile').value = 'dashboard-qa';
+    runtime.document.querySelector('#agentOrgReportsTo').value = '';
+    const ceoDirectReport = runtime.document.querySelector('input[name="agentOrgDirectReports"][value="ceo"]');
+    assert(ceoDirectReport, 'Dashboard direct report checkbox is missing');
+    ceoDirectReport.checked = true;
+    runtime.document.querySelector('[data-agent-save="dashboard"]').click();
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.org), 'Agent dashboard PATCH was not captured');
+    const dashboardPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.org);
+    assert(dashboardPatch.body.active === false, 'Agent dashboard status payload is wrong');
+    assert(dashboardPatch.body.management.settings.adapter.type === 'qa_adapter', 'Agent dashboard adapter type payload is wrong');
+    assert(dashboardPatch.body.management.settings.adapter.model === 'local:dashboard-save-model', 'Agent dashboard model payload is wrong');
+    assert(dashboardPatch.body.management.settings.adapter.modelProfile === 'dashboard-qa', 'Agent dashboard model profile payload is wrong');
+    assert(dashboardPatch.body.management.settings.heartbeat.enabled === false, 'Agent dashboard heartbeat status payload is wrong');
+    assert(dashboardPatch.body.management.settings.heartbeat.intervalSec === 120, 'Agent dashboard heartbeat interval payload is wrong');
+    assert(dashboardPatch.body.management.budget.monthlyCents === 12345, 'Agent dashboard budget payload is wrong');
+    assert(dashboardPatch.body.management.org.reportsToId === '', 'Agent dashboard reports-to payload is wrong');
+    assert(dashboardPatch.body.management.org.directReportIds.includes('ceo'), 'Agent dashboard direct reports payload is wrong');
 
     runtime.document.querySelector('[data-agent-tab="instructions"]').click();
     await waitFor(() => runtime.window.location.hash === '#agent/writer/instructions', 'Instructions tab did not update route');
@@ -608,8 +630,8 @@ async function main() {
     runtime.document.querySelector('#agentHeartbeatEnabled').checked = false;
     runtime.document.querySelector('[data-agent-save="settings"]').click();
     await waitFor(() => runtime.calls.includes('PATCH /api/agents/writer'), 'Agent settings PATCH was not called');
-    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.settings), 'Agent settings PATCH was not captured');
-    const settingsPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.settings);
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.goal === 'QA 관리 목표'), 'Agent settings PATCH was not captured');
+    const settingsPatch = runtime.agentPatchWrites.find((write) => write.body.goal === 'QA 관리 목표');
     assert(settingsPatch.body.goal === 'QA 관리 목표', 'Agent goal payload is wrong');
     assert(settingsPatch.body.management.settings.adapter.model === 'local:qa-edit-model', 'Agent adapter model payload is wrong');
     assert(settingsPatch.body.management.settings.adapter.temperature === 0.45, 'Agent adapter temperature payload is wrong');
@@ -623,8 +645,8 @@ async function main() {
     runtime.document.querySelector('#agentBudgetHardStop').value = '95';
     runtime.document.querySelector('#agentBudgetPolicy').value = 'QA budget policy';
     runtime.document.querySelector('[data-agent-save="budget"]').click();
-    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.budget), 'Agent budget PATCH was not captured');
-    const budgetPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.budget);
+    await waitFor(() => runtime.agentPatchWrites.some((write) => write.body.management && write.body.management.budget && write.body.management.budget.policy === 'QA budget policy'), 'Agent budget PATCH was not captured');
+    const budgetPatch = runtime.agentPatchWrites.find((write) => write.body.management && write.body.management.budget && write.body.management.budget.policy === 'QA budget policy');
     assert(budgetPatch.body.management.budget.monthlyCents === 8825, 'Agent monthly budget payload is wrong');
     assert(budgetPatch.body.management.budget.softAlertPercent === 70, 'Agent soft alert payload is wrong');
     assert(budgetPatch.body.management.budget.hardStopPercent === 95, 'Agent hard stop payload is wrong');
@@ -685,8 +707,8 @@ async function main() {
       config: { defaultModel: 'local:grok-4.3' },
       brain: { fileCount: 1, capped: false },
       agents: [
-        { id: 'ceo', name: 'Anna', role: 'CEO', avatar: '', active: true, openTasks: 0 },
-        { id: 'writer', name: 'Jenny', role: 'Copywriter', avatar: '', active: true, openTasks: 0 }
+        { id: 'ceo', name: 'Anna', role: '마케팅 팀장 · 총괄 오케스트레이터', avatar: '', active: true, openTasks: 0 },
+        { id: 'writer', name: 'Jenny', role: 'Creative Writer · 콘텐츠/카피라이터', avatar: '', active: true, openTasks: 0 }
       ],
       approvals: { pending: 0, all: [] },
       events: []

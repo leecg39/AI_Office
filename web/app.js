@@ -538,11 +538,43 @@ function managerProgress(percent, label = '') {
   `;
 }
 
+function managerAgentOptions(selectedId = '', excludeId = '') {
+  const selected = String(selectedId || '');
+  return [
+    `<option value=""${selectedAttr(selected, '')}>대표 / 최상위</option>`,
+    ...state.agents
+      .filter((item) => item.id !== excludeId)
+      .map((item) => `<option value="${escapeHtml(item.id)}"${selectedAttr(selected, item.id)}>${escapeHtml(item.name)}</option>`)
+  ].join('');
+}
+
+function managerDirectReportChecks(selectedIds = [], excludeId = '') {
+  const selected = new Set((Array.isArray(selectedIds) ? selectedIds : []).map((id) => String(id || '')));
+  return state.agents
+    .filter((item) => item.id !== excludeId)
+    .map((item) => `
+      <label class="manager-agent-check">
+        <input type="checkbox" name="agentOrgDirectReports" value="${escapeHtml(item.id)}"${selected.has(item.id) ? ' checked' : ''}>
+        <span>${escapeHtml(item.name)}</span>
+      </label>
+    `).join('');
+}
+
 function renderManagerDashboard(agent, management) {
   const overview = management.overview || {};
   const budget = management.budget || {};
   const org = management.org || {};
+  const settings = management.settings || {};
+  const adapter = settings.adapter || {};
+  const heartbeat = settings.heartbeat || {};
+  const reportsToId = org.reportsToId !== undefined ? org.reportsToId : ((org.reportsTo && org.reportsTo.id) || '');
+  const directReportIds = Array.isArray(org.directReportIds)
+    ? org.directReportIds
+    : (org.directReports || []).map((item) => item.id).filter(Boolean);
   return `
+    <div class="manager-form-actions manager-dashboard-top-actions">
+      <button type="button" data-agent-save="dashboard">Save dashboard</button>
+    </div>
     <div class="manager-grid">
       ${managerMetric('상태', overview.status === 'running' ? 'Running' : 'Paused', overview.adapterType || '')}
       ${managerMetric('모델', overview.model || '-', overview.modelProfile || '')}
@@ -559,6 +591,23 @@ function renderManagerDashboard(agent, management) {
           <div><dt>Session</dt><dd>${escapeHtml(overview.sessionId || 'No session')}</dd></div>
           <div><dt>Budget</dt><dd>${managerProgress(budget.percent || 0, '예산 사용률')}</dd></div>
         </dl>
+        <div class="manager-dashboard-form">
+          <label class="field compact">
+            <span>상태</span>
+            <select id="agentDashboardStatus">
+              <option value="running"${selectedAttr(overview.status || 'running', 'running')}>Running</option>
+              <option value="paused"${selectedAttr(overview.status || 'running', 'paused')}>Paused</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>Heartbeat seconds</span>
+            <input id="agentDashboardHeartbeatInterval" type="number" min="0" step="1" value="${escapeHtml(heartbeat.intervalSec ?? overview.heartbeatIntervalSec ?? 300)}">
+          </label>
+          <label class="field compact">
+            <span>Monthly budget USD</span>
+            <input id="agentDashboardMonthlyBudget" type="number" min="0" step="0.01" value="${escapeHtml(((Number(budget.monthlyCents) || 0) / 100).toFixed(2))}">
+          </label>
+        </div>
       </section>
       <section class="manager-card">
         <div class="section-kicker">Org Position</div>
@@ -577,8 +626,43 @@ function renderManagerDashboard(agent, management) {
             </dd>
           </div>
         </dl>
+        <div class="manager-dashboard-form">
+          <label class="field compact">
+            <span>Reports to</span>
+            <select id="agentOrgReportsTo">
+              ${managerAgentOptions(reportsToId, agent.id)}
+            </select>
+          </label>
+          <div class="field compact">
+            <span>Direct reports</span>
+            <div class="manager-agent-checks">
+              ${managerDirectReportChecks(directReportIds, agent.id)}
+            </div>
+          </div>
+        </div>
       </section>
     </div>
+    <section class="manager-card">
+      <div class="section-kicker">Runtime Routing</div>
+      <h3>모델/어댑터</h3>
+      <div class="manager-dashboard-form three">
+        <label class="field compact">
+          <span>Adapter type</span>
+          <input id="agentDashboardAdapterType" type="text" value="${escapeHtml(adapter.type || overview.adapterType || 'connect_ai_local')}">
+        </label>
+        <label class="field compact">
+          <span>Model</span>
+          <input id="agentDashboardModel" type="text" value="${escapeHtml(adapter.model || overview.model || '')}">
+        </label>
+        <label class="field compact">
+          <span>Model profile</span>
+          <input id="agentDashboardModelProfile" type="text" value="${escapeHtml(adapter.modelProfile || overview.modelProfile || '')}">
+        </label>
+      </div>
+      <div class="manager-form-actions">
+        <button type="button" data-agent-save="dashboard">Save dashboard</button>
+      </div>
+    </section>
   `;
 }
 
@@ -2029,6 +2113,12 @@ function managerChecked(id, fallback = false) {
   return input ? input.checked : fallback;
 }
 
+function managerCheckedValues(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]:checked`)]
+    .map((item) => item.value.trim())
+    .filter(Boolean);
+}
+
 function managerLines(id) {
   return managerValue(id)
     .split('\n')
@@ -2062,6 +2152,30 @@ function collectAgentManagerPayload(section) {
       instructions: {
         primary: managerLines('agentInstructionInput'),
         operatingPolicy: managerValue('agentPolicyInput')
+      }
+    };
+  } else if (section === 'dashboard') {
+    const dashboardStatus = managerValue('agentDashboardStatus') || 'running';
+    const isRunning = dashboardStatus !== 'paused';
+    payload.active = isRunning;
+    payload.management = {
+      settings: {
+        adapter: {
+          type: managerValue('agentDashboardAdapterType'),
+          model: managerValue('agentDashboardModel'),
+          modelProfile: managerValue('agentDashboardModelProfile')
+        },
+        heartbeat: {
+          enabled: isRunning,
+          intervalSec: managerNumber('agentDashboardHeartbeatInterval', 300)
+        }
+      },
+      budget: {
+        monthlyCents: Math.round(managerNumber('agentDashboardMonthlyBudget', 0) * 100)
+      },
+      org: {
+        reportsToId: managerValue('agentOrgReportsTo'),
+        directReportIds: managerCheckedValues('agentOrgDirectReports')
       }
     };
   } else if (section === 'skills') {
